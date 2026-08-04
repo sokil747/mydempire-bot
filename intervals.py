@@ -22,3 +22,23 @@ PAY_MAINT_RETRY_BASE_SECONDS = 5.0
 # ---- Telegram polling ----
 # Timeout for long-polling updates from Telegram.
 TG_POLLING_TIMEOUT_SECONDS = 30
+
+# ---- scheduled goods claim ----
+# Buffer seconds added after the cooldown expires before claiming.
+GOODS_CLAIM_BUFFER_SECONDS = 1
+
+# Max attempts to check claim readiness at cron time before giving up.
+GOODS_CLAIM_MAX_CHECK_ATTEMPTS = 3
+
+# Delay between readiness re-checks (seconds).
+GOODS_CLAIM_RECHECK_DELAY_SECONDS = 10.0
+
+# Timeout for the scheduled claim action (seconds).
+GOODS_CLAIM_ACTION_TIMEOUT_SECONDS = 30
+
+# ---- imperial supply crate ----
+# Cooldown between crate openings (seconds).
+CRATE_COOLDOWN_SECONDS = 3 * 60 * 60
+
+# Maximum crates that can be opened per day.
+CRATE_MAX_PER_DAY = 4

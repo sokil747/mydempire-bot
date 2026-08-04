@@ -2,6 +2,7 @@ import asyncio
 import html
 import logging
 import random
+from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -14,8 +15,11 @@ import intervals
 from formatters import (
     _int,
     _num,
+    format_crate_open,
+    format_crate_plan,
     format_global_stats,
     format_goods_claim,
+    format_goods_claim_plan,
     format_goods_preview,
     format_lands,
     format_maintenance,
@@ -78,6 +82,9 @@ async def cmd_start(message: Message) -> None:
         "/check_lands - check maintenance & auto-pay due factories if balance positive\n"
         "/goods - goods claim status\n"
         "/claim - claim all factory goods\n"
+        "/crate - open the free daily Imperial Supply Crate\n"
+        "/plan_claim - check goods cooldown & schedule auto-claim\n"
+        "/daily - run daily routine now (claim HIVE + check lands + goods)\n"
         "/global - global game stats and treasury health\n"
         "/rewards - claimable rewards and withdrawal status\n"
         "/claimhive - claim positive claimable HIVE balance\n"
@@ -135,19 +142,26 @@ async def cmd_rewards(message: Message) -> None:
     await _safe_reply(message, text)
 
 
+async def _claim_hive_text() -> str:
+    """Claim the positive claimable HIVE balance.
+
+    Returns a formatted result string.
+    """
+    r = await api.reward_summary(config.HIVE_USERNAME)
+    amount = float(r.get("claimable_amount") or 0)
+    if amount <= 0:
+        return "No HIVE available to claim right now."
+    d = await api.claim_rewards(config.HIVE_USERNAME)
+    return format_reward_claim(d)
+
+
 @dp.message(Command("claimhive"))
 async def cmd_claimhive(message: Message) -> None:
     try:
         await message.bot.send_chat_action(
             chat_id=message.chat.id, action=ChatAction.TYPING
         )
-        r = await api.reward_summary(config.HIVE_USERNAME)
-        amount = float(r.get("claimable_amount") or 0)
-        if amount <= 0:
-            await _reply(message, "No HIVE available to claim right now.")
-            return
-        d = await api.claim_rewards(config.HIVE_USERNAME)
-        text = format_reward_claim(d)
+        text = await _claim_hive_text()
     except MydEmpireAPIError as exc:
         await _reply(message, f"API error: {exc}")
         return
@@ -335,46 +349,51 @@ async def cmd_paymaint(message: Message) -> None:
     await _safe_reply(message, text)
 
 
+async def _check_lands_text() -> str:
+    """Check factory maintenance and auto-pay due factories if balance positive.
+
+    Returns the formatted report as a string.
+    """
+    d = await api.dashboard(config.HIVE_USERNAME)
+    balance = float(d.get("empBalance") or 0)
+    o = await api.empire_overview(config.HIVE_USERNAME)
+    factories = collect_factories(o)
+
+    due = [f for f in factories if f["days_left"] <= 2.0]
+    lines = [
+        f"=== Check Lands: @{config.HIVE_USERNAME} ===",
+        f"EMP balance: {_num(balance)}",
+        f"Factories checked: {len(factories)}",
+        f"Due within 2 days: {len(due)}",
+    ]
+
+    if not due:
+        lines.append("")
+        lines.append("No factories due for maintenance. All good.")
+        return "\n".join(lines)
+
+    if balance <= 0:
+        lines.append("")
+        lines.append(
+            "Maintenance needed but EMP balance is not positive. "
+            "Nothing paid."
+        )
+        return "\n".join(lines)
+
+    lines.append("")
+    lines.append(f"Balance positive, paying {len(due)} factory/factories...")
+    result = await _pay_maintenance(factories, 2.0)
+    pay_text = _format_pay_result(result, "=== Maintenance Auto-Pay ===")
+    return "\n".join(lines + [pay_text])
+
+
 @dp.message(Command("check_lands"))
 async def cmd_check_lands(message: Message) -> None:
     try:
         await message.bot.send_chat_action(
             chat_id=message.chat.id, action=ChatAction.TYPING
         )
-        d = await api.dashboard(config.HIVE_USERNAME)
-        balance = float(d.get("empBalance") or 0)
-        o = await api.empire_overview(config.HIVE_USERNAME)
-        factories = collect_factories(o)
-
-        due = [f for f in factories if f["days_left"] <= 2.0]
-        lines = [
-            f"=== Check Lands: @{config.HIVE_USERNAME} ===",
-            f"EMP balance: {_num(balance)}",
-            f"Factories checked: {len(factories)}",
-            f"Due within 2 days: {len(due)}",
-        ]
-
-        if not due:
-            lines.append("")
-            lines.append("No factories due for maintenance. All good.")
-            await _safe_reply(message, "\n".join(lines))
-            return
-
-        if balance <= 0:
-            lines.append("")
-            lines.append(
-                "Maintenance needed but EMP balance is not positive. "
-                "Nothing paid."
-            )
-            await _safe_reply(message, "\n".join(lines))
-            return
-
-        lines.append("")
-        lines.append(f"Balance positive, paying {len(due)} factory/factories...")
-        await _safe_reply(message, "\n".join(lines))
-
-        result = await _pay_maintenance(factories, 2.0)
-        text = _format_pay_result(result, "=== Maintenance Auto-Pay ===")
+        text = await _check_lands_text()
     except MydEmpireAPIError as exc:
         await _reply(message, f"API error: {exc}")
         return
@@ -423,18 +442,280 @@ async def cmd_claim(message: Message) -> None:
     await _safe_reply(message, text)
 
 
+@dp.message(Command("plan_claim"))
+async def cmd_plan_claim(message: Message) -> None:
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        text = await _plan_goods_claim_text()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("plan_claim failed")
+        await _reply(message, f"Failed to plan goods claim: {exc}")
+        return
+    await _safe_reply(message, text)
+
+
+@dp.message(Command("crate"))
+async def cmd_crate(message: Message) -> None:
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        text = await _plan_crate_text()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("crate failed")
+        await _reply(message, f"Failed to check crate: {exc}")
+        return
+    await _safe_reply(message, text)
+
+
+# ---------------------------------------------------------------------------
+# Daily scheduled tasks: goods claim plan, HIVE claim, check lands.
+# ---------------------------------------------------------------------------
+
+_delayed_claim_task: asyncio.Task | None = None
+_bot: Bot | None = None
+
+
+async def _notify(text: str) -> None:
+    """Send a background notification if a chat id is configured, else log."""
+    chat_id = config.GOODS_CLAIM_NOTIFY_CHAT_ID
+    if not chat_id or _bot is None:
+        logger.info("[daily] %s", text[:500])
+        return
+    try:
+        await _bot.send_message(
+            chat_id,
+            f"<pre>{html.escape(text[:4000])}</pre>",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("notify failed: %s", exc)
+
+
+async def _plan_goods_claim_text() -> str:
+    """Check goods claim status; claim if ready, else plan a delayed claim.
+
+    Returns a formatted plan/result string.
+    """
+    global _delayed_claim_task
+    p = await api.goods_preview(config.HIVE_USERNAME)
+    if p.get("playerClaimReady"):
+        d = await api.goods_claim(config.HIVE_USERNAME)
+        return "=== Goods Claim ===\n" + format_goods_claim(d)
+
+    remaining = int(
+        p.get("remainingGoodsClaimSeconds")
+        or p.get("remaining_goods_claim_seconds")
+        or 0
+    )
+    if remaining > 0:
+        wait = remaining + intervals.GOODS_CLAIM_BUFFER_SECONDS
+        scheduled_for = (datetime.now() + timedelta(seconds=wait)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        if _delayed_claim_task is None or _delayed_claim_task.done():
+            _delayed_claim_task = asyncio.create_task(
+                _delayed_goods_claim(wait)
+            )
+        return format_goods_claim_plan(
+            {
+                "playerClaimReady": False,
+                "remainingGoodsClaimSeconds": remaining,
+                "claimed": False,
+                "scheduled_for": scheduled_for,
+                "status": (
+                    f"Auto-claim scheduled in {int(wait)}s "
+                    "(cooldown + 1s buffer)"
+                ),
+            }
+        )
+    return format_goods_claim_plan(
+        {
+            "playerClaimReady": False,
+            "remainingGoodsClaimSeconds": 0,
+            "claimed": False,
+            "status": "No active cycle / not ready.",
+        }
+    )
+
+
+async def _delayed_goods_claim(wait: float) -> None:
+    """Sleep until cooldown expires, then claim goods and notify."""
+    global _delayed_claim_task
+    try:
+        await asyncio.sleep(wait)
+        p = await api.goods_preview(config.HIVE_USERNAME)
+        for _ in range(intervals.GOODS_CLAIM_MAX_CHECK_ATTEMPTS):
+            if p.get("playerClaimReady"):
+                break
+            await asyncio.sleep(intervals.GOODS_CLAIM_RECHECK_DELAY_SECONDS)
+            p = await api.goods_preview(config.HIVE_USERNAME)
+        if p.get("playerClaimReady"):
+            d = await api.goods_claim(config.HIVE_USERNAME)
+            await _notify("Goods auto-claim done:\n" + format_goods_claim(d))
+        else:
+            await _notify(
+                "Goods still not ready after cooldown expired. Skipped."
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("delayed goods claim failed")
+        await _notify(f"Goods auto-claim failed: {exc}")
+    finally:
+        _delayed_claim_task = None
+
+
+def _parse_iso(ts: str) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+async def _crate_status() -> dict:
+    """Determine current crate availability from history + cooldown rules.
+
+    Only the first free crate of the day is considered openable.
+    """
+    hist = await api.crate_history(config.HIVE_USERNAME)
+    entries = hist.get("history") or []
+    now = datetime.now(tz=datetime.utcnow().astimezone().tzinfo)
+
+    opened_today = 0
+    last_opened = None
+    for e in entries:
+        ts = _parse_iso(e.get("created_at"))
+        if not ts:
+            continue
+        if last_opened is None or ts > last_opened:
+            last_opened = ts
+        opened_utc = ts.astimezone(tz=datetime.utcnow().astimezone().tzinfo)
+        if opened_utc.date() == now.date():
+            opened_today += 1
+
+    d = await api.dashboard(config.HIVE_USERNAME)
+    eligible = float(d.get("globalSharePercent") or 0) >= 1.5
+
+    cooldown_until = None
+    if last_opened is not None:
+        cooldown_until = last_opened + timedelta(
+            seconds=intervals.CRATE_COOLDOWN_SECONDS
+        )
+
+    can_open = opened_today == 0 and eligible
+    cooldown_remaining = None
+    if can_open and cooldown_until is not None and now < cooldown_until:
+        can_open = False
+        cooldown_remaining = str(cooldown_until - now)
+
+    return {
+        "can_open": can_open,
+        "opened_today": opened_today,
+        "eligible": eligible,
+        "last_opened": last_opened,
+        "cooldown_until": cooldown_until,
+        "cooldown_remaining": cooldown_remaining,
+    }
+
+
+async def _plan_crate_text() -> str:
+    """Open the free daily crate if available, else report the plan."""
+    status = await _crate_status()
+    if status["can_open"]:
+        d = await api.open_imperial_crate(config.HIVE_USERNAME)
+        return "=== Imperial Supply Crate ===\n" + format_crate_open(d)
+    if status["opened_today"] >= 1:
+        reason = "Already opened today (only 1 free crate per day)."
+    elif not status["eligible"]:
+        reason = "Not eligible for free crate (need globalShare >= 1.5%)."
+    elif status["cooldown_remaining"]:
+        reason = f"On cooldown: {status['cooldown_remaining']}"
+    else:
+        reason = "Not available."
+    return format_crate_plan(
+        {
+            "can_open": False,
+            "opened_today": status["opened_today"],
+            "cooldown_remaining": status["cooldown_remaining"] or "n/a",
+            "status": reason,
+        }
+    )
+
+
+async def _run_daily_tasks_text() -> str:
+    """Run the daily routine: claim HIVE, check lands, goods, crate."""
+    parts = []
+    try:
+        parts.append(await _claim_hive_text())
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"HIVE claim failed: {exc}")
+    try:
+        parts.append(await _check_lands_text())
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"Check lands failed: {exc}")
+    try:
+        parts.append(await _plan_goods_claim_text())
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"Goods claim plan failed: {exc}")
+    try:
+        parts.append(await _plan_crate_text())
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"Crate failed: {exc}")
+    return "=== Daily Tasks ===\n\n" + "\n\n".join(parts)
+
+
+async def _daily_scheduler_loop() -> None:
+    """Run the daily tasks at the configured time each day (default 02:00)."""
+    while True:
+        now = datetime.now()
+        try:
+            hh, mm = (int(x) for x in config.GOODS_CLAIM_CRON_TIME.split(":"))
+        except (ValueError, AttributeError):
+            hh, mm = 2, 0
+        target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            text = await _run_daily_tasks_text()
+            await _notify(text)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("daily tasks run failed")
+            await _notify(f"Daily tasks failed: {exc}")
+
+
+@dp.message(Command("daily"))
+async def cmd_daily(message: Message) -> None:
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        text = await _run_daily_tasks_text()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("daily failed")
+        await _reply(message, f"Failed to run daily tasks: {exc}")
+        return
+    await _safe_reply(message, text)
+
+
 async def main() -> None:
-    bot = Bot(
+    global _bot
+    _bot = Bot(
         config.TELEGRAM_BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     try:
+        scheduler = asyncio.create_task(_daily_scheduler_loop())
         await dp.start_polling(
-            bot, timeout=intervals.TG_POLLING_TIMEOUT_SECONDS
+            _bot, timeout=intervals.TG_POLLING_TIMEOUT_SECONDS
         )
     finally:
+        scheduler.cancel()
         await api.close()
-        await bot.session.close()
+        await _bot.session.close()
 
 
 if __name__ == "__main__":

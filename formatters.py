@@ -1,5 +1,7 @@
 from typing import Any
 
+import intervals
+
 
 def _num(value: Any) -> str:
     try:
@@ -249,6 +251,57 @@ def format_lands(username: str, d: dict) -> str:
             if tier in tier_ep:
                 lines.append(f"  {tier}: {_num(tier_ep[tier])}")
 
+    return "\n".join(lines)
+
+
+def format_goods_claim_plan(d: dict) -> str:
+    lines = ["=== Goods Claim Plan ==="]
+    ready = d.get("playerClaimReady")
+    if ready is not None:
+        lines.append(f"Ready to claim: {'YES' if ready else 'NO'}")
+    remaining = d.get("remainingGoodsClaimSeconds")
+    if remaining is not None:
+        lines.append(f"Cooldown remaining: {int(remaining)}s")
+    claimed = d.get("claimed")
+    if claimed is not None:
+        lines.append(f"Claimed now: {'yes' if claimed else 'no'}")
+    scheduled_for = d.get("scheduled_for")
+    if scheduled_for:
+        lines.append(f"Planned claim at: {scheduled_for}")
+    status = d.get("status")
+    if status:
+        lines.append(f"Status: {status}")
+    return "\n".join(lines)
+
+
+def format_crate_open(d: dict) -> str:
+    reward = d.get("reward") or {}
+    lines = [
+        "=== Imperial Supply Crate ===",
+        f"Reward: {reward.get('label') or reward.get('reward') or d.get('reward_value') or 'n/a'}",
+        f"Cost: {d.get('crate_cost', 'n/a')} EMP",
+        f"Opened today: {_int(d.get('crates_opened_today') or d.get('cratesOpenedToday'))}",
+    ]
+    return "\n".join(lines)
+
+
+def format_crate_plan(d: dict) -> str:
+    lines = ["=== Imperial Supply Crate ==="]
+    can_open = d.get("can_open")
+    if can_open is not None:
+        lines.append(f"Can open now: {'YES' if can_open else 'NO'}")
+    if d.get("cooldown_remaining"):
+        lines.append(f"Cooldown remaining: {d['cooldown_remaining']}")
+    if d.get("opened_today") is not None:
+        lines.append(
+            f"Opened today: {d['opened_today']} / {intervals.CRATE_MAX_PER_DAY}"
+        )
+    if d.get("cost"):
+        lines.append(f"Cost: {d['cost']} EMP")
+    if d.get("opened"):
+        lines.append("Opened now: yes")
+    if d.get("status"):
+        lines.append(f"Status: {d['status']}")
     return "\n".join(lines)
 
 

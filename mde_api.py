@@ -66,6 +66,23 @@ class MydEmpireClient:
             headers={"x-mde-actor": username},
         )
 
+    async def crate_history(self, username: str) -> dict:
+        return await self.get_json(
+            f"/crate-history/{username}",
+            headers={"x-mde-actor": username},
+        )
+
+    async def open_imperial_crate(self, username: str) -> dict:
+        return await self._request(
+            "POST",
+            "/open-imperial-crate",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+            json={"username": username},
+        )
+
     async def factory_pay_maintenance(
         self, username: str, factory_id: int, days: int = 7
     ) -> dict:
