@@ -21,6 +21,7 @@ from formatters import (
     format_maintenance,
     format_maintenance_paid,
     format_operations,
+    format_reward_claim,
     format_rewards,
     format_status,
     format_wheel,
@@ -79,6 +80,7 @@ async def cmd_start(message: Message) -> None:
         "/claim - claim all factory goods\n"
         "/global - global game stats and treasury health\n"
         "/rewards - claimable rewards and withdrawal status\n"
+        "/claimhive - claim positive claimable HIVE balance\n"
         "/wheel - activity wheel status\n"
         "/ops - empire operations\n"
         "/help - this message",
@@ -129,6 +131,29 @@ async def cmd_rewards(message: Message) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("rewards failed")
         await _reply(message, f"Failed to load rewards: {exc}")
+        return
+    await _safe_reply(message, text)
+
+
+@dp.message(Command("claimhive"))
+async def cmd_claimhive(message: Message) -> None:
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        r = await api.reward_summary(config.HIVE_USERNAME)
+        amount = float(r.get("claimable_amount") or 0)
+        if amount <= 0:
+            await _reply(message, "No HIVE available to claim right now.")
+            return
+        d = await api.claim_rewards(config.HIVE_USERNAME)
+        text = format_reward_claim(d)
+    except MydEmpireAPIError as exc:
+        await _reply(message, f"API error: {exc}")
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("claimhive failed")
+        await _reply(message, f"Failed to claim HIVE: {exc}")
         return
     await _safe_reply(message, text)
 

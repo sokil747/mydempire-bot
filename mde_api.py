@@ -54,6 +54,18 @@ class MydEmpireClient:
             json={"username": username},
         )
 
+    async def claim_rewards(self, username: str) -> dict:
+        return await self.get_json(
+            f"/player/{username}/claim-rewards",
+            headers={"x-mde-actor": username},
+        )
+
+    async def request_withdraw(self, username: str, amount: float) -> dict:
+        return await self.get_json(
+            f"/player/{username}/request-withdraw/{amount:.8f}",
+            headers={"x-mde-actor": username},
+        )
+
     async def factory_pay_maintenance(
         self, username: str, factory_id: int, days: int = 7
     ) -> dict:

@@ -120,6 +120,21 @@ def format_rewards(r: dict) -> str:
     return "\n".join(lines)
 
 
+def format_reward_claim(d: dict) -> str:
+    lines = [
+        "=== Claim Reward ===",
+        f"Claimed: {_num(d.get('claimable_amount'))} HIVE "
+        f"({_int(d.get('claimed_entries'))} entries)",
+        f"Status: {d.get('message') or 'OK'}",
+    ]
+    moved = d.get("moved_to_wallet")
+    if moved is not None:
+        lines.append(
+            f"Moved to wallet: {'yes' if moved else 'no'}"
+        )
+    return "\n".join(lines)
+
+
 def format_wheel(w: dict) -> str:
     lines = [
         "=== Activity Wheel ===",
