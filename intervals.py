@@ -42,3 +42,13 @@ CRATE_COOLDOWN_SECONDS = 3 * 60 * 60
 
 # Maximum crates that can be opened per day.
 CRATE_MAX_PER_DAY = 4
+
+# ---- empire operations automation ----
+# How often to poll for operation readiness while waiting (seconds).
+OPS_POLL_INTERVAL_SECONDS = 60
+
+# Max attempts to collect an operation before giving up.
+OPS_COLLECT_ATTEMPTS = 5
+
+# Backoff between collect retries (seconds).
+OPS_COLLECT_RETRY_SECONDS = 30

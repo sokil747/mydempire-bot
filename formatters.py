@@ -305,6 +305,49 @@ def format_crate_plan(d: dict) -> str:
     return "\n".join(lines)
 
 
+def format_operation_start(d: dict) -> str:
+    op = d.get("operation") or d.get("activeOperation") or {}
+    lines = [
+        "=== Operation Started ===",
+        f"Type: {op.get('operation_type') or d.get('operation_type') or 'n/a'}",
+        f"Budget: {_num(op.get('emp_committed') or d.get('budget'))} EMP",
+    ]
+    if d.get("status"):
+        lines.append(f"Status: {d['status']}")
+    return "\n".join(lines)
+
+
+def format_operation_collect(d: dict) -> str:
+    outcome = d.get("outcome") or {}
+    op = d.get("operation") or {}
+    result = (
+        outcome.get("result")
+        or op.get("result")
+        or outcome.get("result_label")
+        or "Operation Completed"
+    )
+    revenue = outcome.get("revenue") or op.get("reward_emp") or 0
+    lines = [
+        "=== Operation Collected ===",
+        f"Result: {result}",
+        f"Revenue: {_num(revenue)} EMP",
+    ]
+    ia = outcome.get("industrial_authority")
+    if ia is None:
+        ia = op.get("industrial_authority_gained")
+    if ia:
+        lines.append(f"Industrial Authority: +{_num(ia)}")
+    return "\n".join(lines)
+
+
+def format_ops_plan(d: dict) -> str:
+    lines = ["=== Operations Automation ==="]
+    for k, v in d.items():
+        if v is not None:
+            lines.append(f"{k}: {v}")
+    return "\n".join(lines)
+
+
 def format_goods_claim(d: dict) -> str:
     goods = d.get("goods") or []
     lines = [

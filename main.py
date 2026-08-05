@@ -24,7 +24,10 @@ from formatters import (
     format_lands,
     format_maintenance,
     format_maintenance_paid,
+    format_operation_collect,
+    format_operation_start,
     format_operations,
+    format_ops_plan,
     format_reward_claim,
     format_rewards,
     format_status,
@@ -90,6 +93,8 @@ async def cmd_start(message: Message) -> None:
         "/claimhive - claim positive claimable HIVE balance\n"
         "/wheel - activity wheel status\n"
         "/ops - empire operations\n"
+        "/ops_start - start daily ops automation (LOCAL_SUPPLY x3, 4-7h gaps)\n"
+        "/ops_status - current ops automation status\n"
         "/help - this message",
     )
 
@@ -645,8 +650,149 @@ async def _plan_crate_text() -> str:
     )
 
 
-async def _run_daily_tasks_text() -> str:
-    """Run the daily routine: claim HIVE, check lands, goods, crate."""
+# ---------------------------------------------------------------------------
+# Empire operations automation: run up to OPS_PER_DAY operations, starting each
+# after a random 4-7h gap, collecting each when ready.
+# ---------------------------------------------------------------------------
+
+_ops_task: asyncio.Task | None = None
+
+
+def _is_today(ts: str, tz=None) -> bool:
+    dt = _parse_iso(ts)
+    if not dt:
+        return False
+    ref = dt.astimezone(tz or datetime.now().astimezone().tzinfo)
+    return ref.date() == datetime.now().date()
+
+
+async def _count_ops_started_today() -> int:
+    """Count operations of config.OPS_TYPE started today."""
+    d = await api.empire_operations(config.HIVE_USERNAME)
+    hist = d.get("history") or []
+    return sum(
+        1
+        for h in hist
+        if h.get("operation_type") == config.OPS_TYPE and _is_today(h.get("started_at"))
+    )
+
+
+async def _collect_active_if_ready() -> dict | None:
+    """If an active operation is ready (ended), collect it. Returns result or None."""
+    d = await api.empire_operations(config.HIVE_USERNAME)
+    active = d.get("activeOperation")
+    if not active:
+        return None
+    ends = _parse_iso(active.get("ends_at"))
+    now = datetime.now(tz=datetime.utcnow().astimezone().tzinfo)
+    if ends and now >= ends:
+        return await api.collect_operation(config.HIVE_USERNAME, active["id"])
+    return None
+
+
+async def _wait_then_collect() -> dict | None:
+    """Poll until the running op is ready, then collect it."""
+    for _ in range(int(24 * 60 * 60 / intervals.OPS_POLL_INTERVAL_SECONDS)):
+        res = await _collect_active_if_ready()
+        if res is not None:
+            return res
+        await asyncio.sleep(intervals.OPS_POLL_INTERVAL_SECONDS)
+    return None
+
+
+async def _start_one_operation() -> dict:
+    return await api.start_operation(
+        config.HIVE_USERNAME, config.OPS_TYPE, config.OPS_BUDGET
+    )
+
+
+async def _run_ops_automation(quiet: bool = False) -> list[str]:
+    """Run the full ops cycle: start up to OPS_PER_DAY ops, each separated by
+    a random 4-7h gap, collecting each when it finishes.
+
+    Returns a list of human-readable lines describing what happened.
+    """
+    global _ops_task
+    lines = []
+
+    # Account for the pre-existing active op (if any) and any already-started today.
+    data = await api.empire_operations(config.HIVE_USERNAME)
+    active = data.get("activeOperation")
+    started = await _count_ops_started_today()
+    remaining = config.OPS_PER_DAY - started
+    lines.append(
+        f"Ops started today: {started}/{config.OPS_PER_DAY} "
+        f"({config.OPS_TYPE})"
+    )
+    if remaining <= 0:
+        lines.append("Daily limit reached. Nothing to do.")
+        _ops_task = None
+        return lines
+
+    # If there is already an active running op, do not start a new one;
+    # wait for it to finish and collect it first.
+    if active and active.get("operation_type") == config.OPS_TYPE:
+        lines.append(
+            f"Existing {config.OPS_TYPE} running (id {active['id']}). "
+            "Waiting to collect it first."
+        )
+        collected = await _wait_then_collect()
+        if collected:
+            lines.append(format_operation_collect(collected))
+            await _notify(format_operation_collect(collected))
+        else:
+            lines.append("Failed to collect the existing operation (timeout).")
+            _ops_task = None
+            return lines
+
+    for _ in range(remaining):
+        await _start_one_operation()
+        lines.append(
+            f"Started {config.OPS_TYPE} (budget {config.OPS_BUDGET} EMP)."
+        )
+        await _notify(
+            f"Started {config.OPS_TYPE} (budget {config.OPS_BUDGET} EMP)."
+        )
+
+        collected = await _wait_then_collect()
+        if collected:
+            lines.append(format_operation_collect(collected))
+            await _notify(format_operation_collect(collected))
+        else:
+            lines.append("Failed to collect operation (timeout).")
+            break
+
+        # gap before next start
+        gap = random.uniform(4.0, 7.0) * 3600
+        lines.append(f"Next operation in {gap / 3600:.1f}h.")
+        await asyncio.sleep(gap)
+
+    _ops_task = None
+    return lines
+
+
+async def _kickoff_ops_automation() -> str:
+    """Start the ops automation as a background task if not already running."""
+    global _ops_task
+    if _ops_task is not None and not _ops_task.done():
+        return "Operations automation already running."
+    started = await _count_ops_started_today()
+    remaining = config.OPS_PER_DAY - started
+    if remaining <= 0:
+        return (
+            f"Daily limit reached: {started}/{config.OPS_PER_DAY} "
+            f"{config.OPS_TYPE} ops already started today."
+        )
+    _ops_task = asyncio.create_task(_run_ops_automation())
+    return (
+        f"Operations automation started: {remaining} more {config.OPS_TYPE} "
+        f"ops today (budget {config.OPS_BUDGET} EMP each), "
+        f"4-7h gaps, collect when ready."
+    )
+
+
+async def _run_daily_tasks_text():
+    """Run the daily routine: claim HIVE, check lands, goods, crate, ops."""
     parts = []
     try:
         parts.append(await _claim_hive_text())
@@ -664,7 +810,48 @@ async def _run_daily_tasks_text() -> str:
         parts.append(await _plan_crate_text())
     except Exception as exc:  # noqa: BLE001
         parts.append(f"Crate failed: {exc}")
+    try:
+        parts.append(await _kickoff_ops_automation())
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"Ops automation failed: {exc}")
     return "=== Daily Tasks ===\n\n" + "\n\n".join(parts)
+
+
+@dp.message(Command("ops_start"))
+async def cmd_ops_start(message: Message) -> None:
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        text = await _kickoff_ops_automation()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ops_start failed")
+        await _reply(message, f"Failed to start ops automation: {exc}")
+        return
+    await _safe_reply(message, text)
+
+
+@dp.message(Command("ops_status"))
+async def cmd_ops_status(message: Message) -> None:
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        started = await _count_ops_started_today()
+        running = _ops_task is not None and not _ops_task.done()
+        text = format_ops_plan(
+            {
+                "Ops type": config.OPS_TYPE,
+                "Started today": f"{started}/{config.OPS_PER_DAY}",
+                "Automation running": "yes" if running else "no",
+                "Budget per op": f"{config.OPS_BUDGET} EMP",
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ops_status failed")
+        await _reply(message, f"Failed to get ops status: {exc}")
+        return
+    await _safe_reply(message, text)
 
 
 async def _daily_scheduler_loop() -> None:

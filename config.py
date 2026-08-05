@@ -26,3 +26,11 @@ GOODS_CLAIM_CRON_TIME = "02:00"
 # Telegram chat id to receive daily task notifications.
 # Leave as None to only log notifications (no Telegram message).
 GOODS_CLAIM_NOTIFY_CHAT_ID = None
+
+# ---- empire operations automation ----
+# Operation type to run each day (LOCAL_SUPPLY / REGIONAL_TRADE / IMPERIAL_EXPANSION).
+OPS_TYPE = "LOCAL_SUPPLY"
+# EMP budget to commit per operation.
+OPS_BUDGET = 25
+# How many operations to start per day.
+OPS_PER_DAY = 3

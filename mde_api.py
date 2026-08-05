@@ -114,6 +114,36 @@ class MydEmpireClient:
     async def empire_operations(self, username: str) -> dict:
         return await self.get_json(f"/player/{username}/empire-operations")
 
+    async def start_operation(
+        self, username: str, operation_type: str, budget: int
+    ) -> dict:
+        return await self._request(
+            "POST",
+            "/empire-operations/start",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+            json={
+                "username": username,
+                "operation_type": operation_type,
+                "budget": budget,
+            },
+        )
+
+    async def collect_operation(
+        self, username: str, operation_id: int
+    ) -> dict:
+        return await self._request(
+            "POST",
+            "/empire-operations/collect",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+            json={"username": username, "operation_id": operation_id},
+        )
+
     async def activity_wheel(self, username: str) -> dict:
         return await self.get_json(f"/player/{username}/activity-wheel")
 
