@@ -99,6 +99,16 @@ class MydEmpireClient:
     async def dashboard(self, username: str) -> dict:
         return await self.get_json(f"/player/{username}/dashboard")
 
+    async def rat_cleanup(self, username: str) -> dict:
+        return await self._request(
+            "POST",
+            f"/player/{username}/rat-cleanup",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+        )
+
     async def global_stats(self) -> dict:
         return await self.get_json("/global-stats")
 

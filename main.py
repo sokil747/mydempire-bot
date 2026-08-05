@@ -33,6 +33,7 @@ from formatters import (
     format_ops_plan,
     format_reward_claim,
     format_rewards,
+    format_rat_cleanup,
     format_status,
     format_wheel,
     format_wheel_spin,
@@ -97,6 +98,7 @@ async def cmd_start(message: Message) -> None:
         "/claimhive - claim positive claimable HIVE balance\n"
         "/wheel - activity wheel status\n"
         "/wheel_spin - spin the wheel while spins are available\n"
+        "/cleanup - check warehouse condition and clean if not Spotless\n"
         "/ops - empire operations\n"
         "/ops_start - start daily ops automation (LOCAL_SUPPLY x3, 4-7h gaps)\n"
         "/ops_status - current ops automation status\n"
@@ -205,6 +207,20 @@ async def cmd_wheel_spin(message: Message) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("wheel_spin failed")
         await _reply(message, f"Failed to spin wheel: {exc}")
+        return
+    await _safe_reply(message, text)
+
+
+@dp.message(Command("cleanup"))
+async def cmd_cleanup(message: Message) -> None:
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        text = await _plan_warehouse_clean()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("cleanup failed")
+        await _reply(message, f"Failed to check/clean warehouse: {exc}")
         return
     await _safe_reply(message, text)
 
@@ -1040,6 +1056,30 @@ async def _plan_wheel_text() -> str:
     return "\n".join(lines)
 
 
+async def _plan_warehouse_clean() -> str:
+    """Check warehouse condition; launch cleanup unless Spotless.
+
+    Condition levels: Spotless (clean), Clean, Orderly, Cluttered, Infested.
+    Any state other than Spotless triggers the cleanup crew.
+    """
+    d = await api.dashboard(config.HIVE_USERNAME)
+    condition = str(d.get("warehouseCondition") or "").strip().lower()
+    if condition == "spotless":
+        return (
+            f"=== Warehouse ===\nCondition: Spotless — "
+            "no cleanup needed."
+        )
+    cost = d.get("ratCleanupCost")
+    cost_txt = f" (cost {_num(cost)} EMP)" if cost else ""
+    result = await api.rat_cleanup(config.HIVE_USERNAME)
+    text = (
+        f"=== Warehouse ===\nCondition: {condition}{cost_txt}\n"
+        + format_rat_cleanup(result)
+    )
+    await _notify(text)
+    return text
+
+
 async def _run_daily_tasks_text():
     """Run the daily routine: claim HIVE, check lands, goods, crate, ops."""
     parts = []
@@ -1063,6 +1103,10 @@ async def _run_daily_tasks_text():
         parts.append(await _plan_fulfillment_text())
     except Exception as exc:  # noqa: BLE001
         parts.append(f"Fulfillment plan failed: {exc}")
+    try:
+        parts.append(await _plan_warehouse_clean())
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"Warehouse check failed: {exc}")
     try:
         parts.append(await _plan_wheel_text())
     except Exception as exc:  # noqa: BLE001

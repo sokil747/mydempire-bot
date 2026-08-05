@@ -159,6 +159,22 @@ def format_wheel(w: dict) -> str:
     return "\n".join(lines)
 
 
+def format_rat_cleanup(d: dict) -> str:
+    lines = ["=== Warehouse Cleanup ==="]
+    if d.get("success"):
+        lines.append("Cleanup completed.")
+    else:
+        lines.append("Cleanup failed.")
+    if d.get("empSpent") is not None:
+        lines.append(f"EMP spent: {_num(d.get('empSpent'))}")
+    if d.get("smpReward") is not None:
+        lines.append(f"Salvage parts recovered: {_num(d.get('smpReward'))}")
+    for key in ("message", "error"):
+        if d.get(key):
+            lines.append(d[key])
+    return "\n".join(lines)
+
+
 def format_wheel_spin(d: dict) -> str:
     reward = d.get("reward") or d.get("result") or {}
     lines = ["=== Wheel Spin ==="]
