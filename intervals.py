@@ -36,6 +36,10 @@ GOODS_CLAIM_RECHECK_DELAY_SECONDS = 10.0
 # Timeout for the scheduled claim action (seconds).
 GOODS_CLAIM_ACTION_TIMEOUT_SECONDS = 30
 
+# How often the persistent watchdog re-checks for ready goods to claim.
+# Runs regardless of the 02:00 daily schedule so a restart cannot skip a claim.
+GOODS_WATCHDOG_INTERVAL_SECONDS = 60
+
 # ---- imperial supply crate ----
 # Cooldown between crate openings (seconds).
 CRATE_COOLDOWN_SECONDS = 3 * 60 * 60

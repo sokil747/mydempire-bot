@@ -1203,6 +1203,24 @@ async def cmd_daily(message: Message) -> None:
     await _safe_reply(message, text)
 
 
+async def _goods_watchdog_loop() -> None:
+    """Periodically claim goods as soon as they are ready.
+
+    Unlike the 02:00 daily task (which schedules one in-memory delayed claim),
+    this loop re-checks indefinitely, so a bot restart between the schedule and
+    the ready-time can never lose a claim.
+    """
+    while True:
+        try:
+            p = await api.goods_preview(config.HIVE_USERNAME)
+            if p.get("playerClaimReady"):
+                d = await api.goods_claim(config.HIVE_USERNAME)
+                await _notify("Goods auto-claim (watchdog):\n" + format_goods_claim(d))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("goods watchdog check failed: %s", exc)
+        await asyncio.sleep(intervals.GOODS_WATCHDOG_INTERVAL_SECONDS)
+
+
 async def main() -> None:
     global _bot
     _bot = Bot(
@@ -1211,11 +1229,13 @@ async def main() -> None:
     )
     try:
         scheduler = asyncio.create_task(_daily_scheduler_loop())
+        watchdog = asyncio.create_task(_goods_watchdog_loop())
         await dp.start_polling(
             _bot, timeout=intervals.TG_POLLING_TIMEOUT_SECONDS
         )
     finally:
         scheduler.cancel()
+        watchdog.cancel()
         await api.close()
         await _bot.session.close()
 
