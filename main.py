@@ -12,6 +12,7 @@ from aiogram.types import Message
 
 import config
 import intervals
+import scheduler
 from formatters import (
     _int,
     _num,
@@ -536,9 +537,11 @@ async def _notify(text: str) -> None:
 
 
 async def _plan_goods_claim_text() -> str:
-    """Check goods claim status; claim if ready, else plan a delayed claim.
+    """Check goods claim status; claim if ready, else persist a planned time.
 
-    Returns a formatted plan/result string.
+    The planned claim time is written to ``state.json`` so a restart cannot
+    lose it. The scheduler loop reads that time and fires the claim exactly
+    when due (no polling).
     """
     global _delayed_claim_task
     p = await api.goods_preview(config.HIVE_USERNAME)
@@ -552,13 +555,16 @@ async def _plan_goods_claim_text() -> str:
         or 0
     )
     if remaining > 0:
-        wait = remaining + intervals.GOODS_CLAIM_BUFFER_SECONDS
-        scheduled_for = (datetime.now() + timedelta(seconds=wait)).strftime(
-            "%Y-%m-%d %H:%M:%S"
+        planned = (
+            datetime.now().astimezone()
+            + timedelta(seconds=remaining + intervals.GOODS_CLAIM_BUFFER_SECONDS)
         )
+        scheduler.set_planned(_GOODS_STATE_KEY, planned)
+        wait = (planned - datetime.now().astimezone()).total_seconds()
+        scheduled_for = planned.strftime("%Y-%m-%d %H:%M:%S")
         if _delayed_claim_task is None or _delayed_claim_task.done():
             _delayed_claim_task = asyncio.create_task(
-                _delayed_goods_claim(wait)
+                _goods_claim_and_requeue(wait=wait)
             )
         return format_goods_claim_plan(
             {
@@ -567,11 +573,12 @@ async def _plan_goods_claim_text() -> str:
                 "claimed": False,
                 "scheduled_for": scheduled_for,
                 "status": (
-                    f"Auto-claim scheduled in {int(wait)}s "
-                    "(cooldown + 1s buffer)"
+                    f"Auto-claim scheduled at {scheduled_for} "
+                    f"(in {int(wait)}s, +{intervals.GOODS_CLAIM_BUFFER_SECONDS}s buffer)"
                 ),
             }
         )
+    scheduler.clear_planned(_GOODS_STATE_KEY)
     return format_goods_claim_plan(
         {
             "playerClaimReady": False,
@@ -580,31 +587,6 @@ async def _plan_goods_claim_text() -> str:
             "status": "No active cycle / not ready.",
         }
     )
-
-
-async def _delayed_goods_claim(wait: float) -> None:
-    """Sleep until cooldown expires, then claim goods and notify."""
-    global _delayed_claim_task
-    try:
-        await asyncio.sleep(wait)
-        p = await api.goods_preview(config.HIVE_USERNAME)
-        for _ in range(intervals.GOODS_CLAIM_MAX_CHECK_ATTEMPTS):
-            if p.get("playerClaimReady"):
-                break
-            await asyncio.sleep(intervals.GOODS_CLAIM_RECHECK_DELAY_SECONDS)
-            p = await api.goods_preview(config.HIVE_USERNAME)
-        if p.get("playerClaimReady"):
-            d = await api.goods_claim(config.HIVE_USERNAME)
-            await _notify("Goods auto-claim done:\n" + format_goods_claim(d))
-        else:
-            await _notify(
-                "Goods still not ready after cooldown expired. Skipped."
-            )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("delayed goods claim failed")
-        await _notify(f"Goods auto-claim failed: {exc}")
-    finally:
-        _delayed_claim_task = None
 
 
 def _parse_iso(ts: str) -> datetime | None:
@@ -1203,22 +1185,128 @@ async def cmd_daily(message: Message) -> None:
     await _safe_reply(message, text)
 
 
-async def _goods_watchdog_loop() -> None:
-    """Periodically claim goods as soon as they are ready.
+_GOODS_STATE_KEY = "goods_claim"
 
-    Unlike the 02:00 daily task (which schedules one in-memory delayed claim),
-    this loop re-checks indefinitely, so a bot restart between the schedule and
-    the ready-time can never lose a claim.
+
+async def _run_goods_claim() -> None:
+    """Claim goods now and persist the next planned claim time.
+
+    Called by the scheduler when the stored planned time is reached. After
+    claiming, computes the next ready time from the new cycle and writes it
+    back to state.json so the loop keeps the cadence alive.
     """
-    while True:
+    p = await api.goods_preview(config.HIVE_USERNAME)
+    if not p.get("playerClaimReady"):
+        remaining = int(
+            p.get("remainingGoodsClaimSeconds")
+            or p.get("remaining_goods_claim_seconds")
+            or 0
+        )
+        if remaining > 0:
+            scheduler.set_planned(
+                _GOODS_STATE_KEY,
+                datetime.now().astimezone()
+                + timedelta(seconds=remaining + intervals.GOODS_CLAIM_BUFFER_SECONDS),
+            )
+            return
+        scheduler.clear_planned(_GOODS_STATE_KEY)
+        return
+    d = await api.goods_claim(config.HIVE_USERNAME)
+    await _notify("Goods auto-claim:\n" + format_goods_claim(d))
+    fresh = await api.goods_preview(config.HIVE_USERNAME)
+    remaining = int(
+        fresh.get("remainingGoodsClaimSeconds")
+        or fresh.get("remaining_goods_claim_seconds")
+        or 0
+    )
+    if remaining > 0:
+        scheduler.set_planned(
+            _GOODS_STATE_KEY,
+            datetime.now().astimezone()
+            + timedelta(seconds=remaining + intervals.GOODS_CLAIM_BUFFER_SECONDS),
+        )
+    else:
+        scheduler.clear_planned(_GOODS_STATE_KEY)
+
+
+async def _schedule_from_state(now: datetime) -> None:
+    """Schedule a wake-up task for the stored planned time, if due soon.
+
+    Reads the persisted planned time from state.json. If none is stored, the
+    plan is computed from the live preview and saved; the next loop iteration
+    then picks it up. If one is stored, spawn a precise asyncio task to run
+    the action at that moment instead of polling.
+    """
+    global _delayed_claim_task
+    if _delayed_claim_task is not None and not _delayed_claim_task.done():
+        return
+    planned = scheduler.get_planned(_GOODS_STATE_KEY)
+    if planned is None:
         try:
             p = await api.goods_preview(config.HIVE_USERNAME)
-            if p.get("playerClaimReady"):
-                d = await api.goods_claim(config.HIVE_USERNAME)
-                await _notify("Goods auto-claim (watchdog):\n" + format_goods_claim(d))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("goods watchdog check failed: %s", exc)
-        await asyncio.sleep(intervals.GOODS_WATCHDOG_INTERVAL_SECONDS)
+            logger.warning("goods schedule preview failed: %s", exc)
+            return
+        if p.get("playerClaimReady"):
+            scheduler.set_planned(
+                _GOODS_STATE_KEY, now + timedelta(seconds=1)
+            )
+        else:
+            remaining = int(
+                p.get("remainingGoodsClaimSeconds")
+                or p.get("remaining_goods_claim_seconds")
+                or 0
+            )
+            if remaining > 0:
+                scheduler.set_planned(
+                    _GOODS_STATE_KEY,
+                    now
+                    + timedelta(
+                        seconds=remaining + intervals.GOODS_CLAIM_BUFFER_SECONDS
+                    ),
+                )
+            else:
+                scheduler.clear_planned(_GOODS_STATE_KEY)
+        return
+    wait = (planned - now).total_seconds()
+    if wait <= 0:
+        _delayed_claim_task = asyncio.create_task(
+            _goods_claim_and_requeue()
+        )
+    elif wait <= intervals.GOODS_SCHEDULE_MAX_AHEAD_SECONDS:
+        _delayed_claim_task = asyncio.create_task(
+            _goods_claim_and_requeue(wait=wait)
+        )
+
+
+async def _goods_claim_and_requeue(wait: float = 0.0) -> None:
+    """Wait until planned time, claim, then persist the next planned time."""
+    global _delayed_claim_task
+    try:
+        if wait > 0:
+            await asyncio.sleep(wait)
+        await _run_goods_claim()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("scheduled goods claim failed")
+        await _notify(f"Goods auto-claim failed: {exc}")
+    finally:
+        _delayed_claim_task = None
+
+
+async def _scheduler_loop() -> None:
+    """Maintenance loop: read state.json, schedule planned actions.
+
+    Runs cheaply (local file read + rare preview). The actual goods claim is
+    triggered at the persisted planned time by an asyncio task, so no constant
+    API polling is required.
+    """
+    while True:
+        now = datetime.now().astimezone()
+        try:
+            await _schedule_from_state(now)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("scheduler step failed: %s", exc)
+        await asyncio.sleep(intervals.GOODS_SCHEDULER_REFRESH_SECONDS)
 
 
 async def main() -> None:
@@ -1229,13 +1317,13 @@ async def main() -> None:
     )
     try:
         scheduler = asyncio.create_task(_daily_scheduler_loop())
-        watchdog = asyncio.create_task(_goods_watchdog_loop())
+        goods_sched = asyncio.create_task(_scheduler_loop())
         await dp.start_polling(
             _bot, timeout=intervals.TG_POLLING_TIMEOUT_SECONDS
         )
     finally:
         scheduler.cancel()
-        watchdog.cancel()
+        goods_sched.cancel()
         await api.close()
         await _bot.session.close()
 

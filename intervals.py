@@ -36,9 +36,14 @@ GOODS_CLAIM_RECHECK_DELAY_SECONDS = 10.0
 # Timeout for the scheduled claim action (seconds).
 GOODS_CLAIM_ACTION_TIMEOUT_SECONDS = 30
 
-# How often the persistent watchdog re-checks for ready goods to claim.
-# Runs regardless of the 02:00 daily schedule so a restart cannot skip a claim.
-GOODS_WATCHDOG_INTERVAL_SECONDS = 60
+# How often the scheduler re-reads state.json to recover planned tasks.
+# This is a cheap local file read (no API polling) and acts as a restart
+# safety net; the precise action fires at its persisted planned time via an
+# asyncio task, not from repeated API checks.
+GOODS_SCHEDULER_REFRESH_SECONDS = 300
+
+# Maximum how far ahead the scheduler may run a task (safety cap).
+GOODS_SCHEDULE_MAX_AHEAD_SECONDS = 30 * 24 * 60 * 60
 
 # ---- imperial supply crate ----
 # Cooldown between crate openings (seconds).
