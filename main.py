@@ -17,6 +17,9 @@ from formatters import (
     _num,
     format_crate_open,
     format_crate_plan,
+    format_fulfillment_claim,
+    format_fulfillment_start,
+    format_fulfillment_status,
     format_global_stats,
     format_goods_claim,
     format_goods_claim_plan,
@@ -95,6 +98,7 @@ async def cmd_start(message: Message) -> None:
         "/ops - empire operations\n"
         "/ops_start - start daily ops automation (LOCAL_SUPPLY x3, 4-7h gaps)\n"
         "/ops_status - current ops automation status\n"
+        "/fulfillment - check factory fulfillment progress & plan claim\n"
         "/help - this message",
     )
 
@@ -791,6 +795,188 @@ async def _kickoff_ops_automation() -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Factory fulfillment automation: check progress, estimate completion, claim
+# when 100% (+ buffer), then start a new fulfillment.
+# ---------------------------------------------------------------------------
+
+_fulfillment_claim_task: asyncio.Task | None = None
+
+
+async def _estimate_fulfillment_completion(active: dict, progress: dict) -> datetime | None:
+    """Estimate when the active fulfillment will reach 100%.
+
+    Uses points/sec based on elapsed time, falling back to the API's
+    cycle_ends_at / elapsed_seconds when available.
+    """
+    now = datetime.now(tz=datetime.utcnow().astimezone().tzinfo)
+    pct = float(progress.get("percent") or 0)
+    if pct >= 100:
+        return now
+    target = float(active.get("target_points") or progress.get("target") or 0)
+    current = float(progress.get("progress") or 0)
+    if target <= 0 or current >= target:
+        return None
+
+    # Estimate rate from elapsed time if progress is > 0.
+    elapsed = float(active.get("elapsed_seconds") or 0)
+    if elapsed > 0 and current > 0:
+        rate_per_sec = current / elapsed
+        remaining = target - current
+        if rate_per_sec > 0:
+            return now + timedelta(seconds=remaining / rate_per_sec)
+
+    # Fall back to cycle end timestamp.
+    ends = _parse_iso(active.get("cycle_ends_at"))
+    if ends:
+        return ends.astimezone(tz=datetime.utcnow().astimezone().tzinfo)
+    return None
+
+
+def _pick_fulfillment_industry(d: dict) -> str | None:
+    """Pick the first available producing industry for a new fulfillment."""
+    rotation = d.get("rotationStatus") or {}
+    remaining = rotation.get("remainingIndustries") or []
+    producing = d.get("producingIndustries") or []
+    if remaining:
+        return remaining[0]
+    if producing:
+        return producing[0]
+    return None
+
+
+async def _delayed_fulfillment_claim(wait: float) -> None:
+    """Wait until the estimated completion, poll to 100%, then claim."""
+    global _fulfillment_claim_task
+    try:
+        await asyncio.sleep(wait)
+        for _ in range(int(48 * 3600 / intervals.OPS_POLL_INTERVAL_SECONDS)):
+            d = await api.factory_fulfillment(config.HIVE_USERNAME)
+            progress = d.get("activeProgress") or {}
+            if progress.get("isTargetComplete") or (
+                float(progress.get("percent") or 0) >= 100
+            ):
+                claim = await api.factory_fulfillment_claim(config.HIVE_USERNAME)
+                await _notify(
+                    "Fulfillment claimed:\n" + format_fulfillment_claim(claim)
+                )
+                return
+            await asyncio.sleep(intervals.OPS_POLL_INTERVAL_SECONDS)
+        await _notify("Fulfillment not ready after polling. Skipped.")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("delayed fulfillment claim failed")
+        await _notify(f"Fulfillment auto-claim failed: {exc}")
+    finally:
+        _fulfillment_claim_task = None
+
+
+async def _plan_fulfillment_text() -> str:
+    """Check fulfillment progress; claim if 100%, else plan a delayed claim.
+
+    Runs daily at 02:00: if progress is estimated to reach 100% later, the
+    claim is scheduled at that time + 2s buffer.
+    """
+    global _fulfillment_claim_task
+    d = await api.factory_fulfillment(config.HIVE_USERNAME)
+    active = d.get("activeFulfillment") or {}
+    progress = d.get("activeProgress") or {}
+    claimed = d.get("lastFulfillment") or {}
+
+    if not active:
+        # Nothing active. If cooldown allows, start a new fulfillment.
+        cooldown = d.get("fulfillmentCooldown") or {}
+        if cooldown.get("active"):
+            return (
+                format_fulfillment_status(d)
+                + "\n\nNo active fulfillment. "
+                f"Cooldown until {_fmt_iso(cooldown.get('cooldownEndsAt'))}."
+            )
+        started = await _start_fulfillment(d)
+        if started:
+            fresh = await api.factory_fulfillment(config.HIVE_USERNAME)
+            return format_fulfillment_status(fresh) + "\n\n" + started
+        return format_fulfillment_status(d) + "\n\nNo active fulfillment."
+
+    pct = float(progress.get("percent") or 0)
+    complete = progress.get("isTargetComplete") or pct >= 100
+
+    if complete:
+        # Claim now (100% reached), then start a new fulfillment if possible.
+        claim = await api.factory_fulfillment_claim(config.HIVE_USERNAME)
+        await _notify(
+            "Fulfillment claimed:\n" + format_fulfillment_claim(claim)
+        )
+        parts = [
+            format_fulfillment_status(d),
+            format_fulfillment_claim(claim),
+        ]
+        started = await _start_fulfillment()
+        if started:
+            parts.append(started)
+        return "\n\n".join(parts)
+
+    # Estimate completion and schedule delayed claim at +2s buffer.
+    est = await _estimate_fulfillment_completion(active, progress)
+    if est is None:
+        return format_fulfillment_status(d) + "\n\nCannot estimate completion."
+    wait = max(0.0, (est - datetime.now(tz=datetime.utcnow().astimezone().tzinfo)).total_seconds())
+    wait += config.FULFILLMENT_CLAIM_BUFFER_SECONDS
+    scheduled_for = (datetime.now() + timedelta(seconds=wait)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    if _fulfillment_claim_task is None or _fulfillment_claim_task.done():
+        _fulfillment_claim_task = asyncio.create_task(_delayed_fulfillment_claim(wait))
+    lines = [
+        "=== Factory Fulfillment ===",
+        f"Active: {active.get('fulfillment_type')} ({active.get('industry')})",
+        f"Progress: {_int(progress.get('progress'))} / {_int(progress.get('target'))} "
+        f"({_num(pct)}%)",
+        f"Estimated 100%: {est.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Auto-claim scheduled at: {scheduled_for} (+{config.FULFILLMENT_CLAIM_BUFFER_SECONDS}s)",
+    ]
+    return "\n".join(lines)
+
+
+def _fmt_iso(value: str | None) -> str:
+    """Format an ISO timestamp for display; return raw value if unparsable."""
+    if not value:
+        return "n/a"
+    parsed = _parse_iso(value)
+    if parsed:
+        return parsed.strftime("%Y-%m-%d %H:%M")
+    return str(value)
+
+
+async def _start_fulfillment(prior: dict | None = None) -> str | None:
+    """Start a new fulfillment of the configured type.
+
+    Picks the first remaining industry from the rotation (falling back to the
+    first producing industry). Returns a formatted start message, or None if
+    nothing can be started.
+    """
+    if prior is None:
+        prior = await api.factory_fulfillment(config.HIVE_USERNAME)
+    if prior.get("activeFulfillment"):
+        return None
+    cooldown = prior.get("fulfillmentCooldown") or {}
+    if cooldown.get("active"):
+        return (
+            "Cannot start new fulfillment: cooldown until "
+            f"{_fmt_iso(cooldown.get('cooldownEndsAt'))}."
+        )
+    industry = _pick_fulfillment_industry(prior)
+    if not industry:
+        return "Cannot start new fulfillment: no producing industries."
+    started = await api.factory_fulfillment_start(
+        config.HIVE_USERNAME,
+        config.FULFILLMENT_TYPE,
+        industry,
+    )
+    text = format_fulfillment_start(started)
+    await _notify("Fulfillment started:\n" + text)
+    return text
+
+
 async def _run_daily_tasks_text():
     """Run the daily routine: claim HIVE, check lands, goods, crate, ops."""
     parts = []
@@ -810,6 +996,10 @@ async def _run_daily_tasks_text():
         parts.append(await _plan_crate_text())
     except Exception as exc:  # noqa: BLE001
         parts.append(f"Crate failed: {exc}")
+    try:
+        parts.append(await _plan_fulfillment_text())
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"Fulfillment plan failed: {exc}")
     try:
         parts.append(await _kickoff_ops_automation())
     except Exception as exc:  # noqa: BLE001
@@ -850,6 +1040,20 @@ async def cmd_ops_status(message: Message) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("ops_status failed")
         await _reply(message, f"Failed to get ops status: {exc}")
+        return
+    await _safe_reply(message, text)
+
+
+@dp.message(Command("fulfillment"))
+async def cmd_fulfillment(message: Message) -> None:
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        text = await _plan_fulfillment_text()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("fulfillment failed")
+        await _reply(message, f"Failed to check fulfillment: {exc}")
         return
     await _safe_reply(message, text)
 

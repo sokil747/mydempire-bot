@@ -34,3 +34,9 @@ OPS_TYPE = "LOCAL_SUPPLY"
 OPS_BUDGET = 25
 # How many operations to start per day.
 OPS_PER_DAY = 3
+
+# ---- factory fulfillment automation ----
+# Fulfillment type to start after claiming (STANDARD_BATCH / BULK_SHIPMENT / GRAND_CONSIGNMENT).
+FULFILLMENT_TYPE = "GRAND_CONSIGNMENT"
+# Buffer seconds added after estimated completion before claiming.
+FULFILLMENT_CLAIM_BUFFER_SECONDS = 2

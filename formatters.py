@@ -348,6 +348,62 @@ def format_ops_plan(d: dict) -> str:
     return "\n".join(lines)
 
 
+def format_fulfillment_status(d: dict) -> str:
+    active = d.get("activeFulfillment") or {}
+    progress = d.get("activeProgress") or {}
+    lines = [
+        "=== Factory Fulfillment ===",
+        f"Active: {active.get('fulfillment_type', 'none')} "
+        f"({active.get('industry', 'n/a')})",
+        f"Progress: {_int(progress.get('progress'))} / {_int(progress.get('target'))} "
+        f"({_num(progress.get('percent'))}%)",
+        f"Target complete: {'YES' if progress.get('isTargetComplete') else 'NO'}",
+    ]
+    credits = d.get("fulfillmentCredits")
+    if credits is not None:
+        lines.append(f"Fulfillment credits: {_int(credits)}")
+    rotation = d.get("rotationStatus") or {}
+    remaining = rotation.get("remainingIndustries")
+    if remaining:
+        lines.append("Remaining industries: " + ", ".join(remaining))
+    return "\n".join(lines)
+
+
+def format_fulfillment_claim(d: dict) -> str:
+    outcome = d.get("outcome") or d.get("claimResult") or {}
+    lines = [
+        "=== Fulfillment Claimed ===",
+        f"Outcome: {outcome.get('label') or d.get('message') or 'Claimed'}",
+    ]
+    if outcome.get("finalEmpReward") is not None:
+        lines.append(f"Final EMP: {_num(outcome.get('finalEmpReward'))}")
+    if outcome.get("baseReward") is not None:
+        lines.append(f"Base EMP: {_num(outcome.get('baseReward'))}")
+    if outcome.get("multiplier") is not None:
+        lines.append(
+            f"Multiplier: {round(float(outcome.get('multiplier', 1)) * 100)}%"
+        )
+    if outcome.get("creditsReward") is not None:
+        lines.append(
+            f"Credits: {_int(outcome.get('creditsReward'))}"
+        )
+    return "\n".join(lines)
+
+
+def format_fulfillment_start(d: dict) -> str:
+    fulfillment = d.get("fulfillment") or d.get("activeFulfillment") or {}
+    lines = [
+        "=== Fulfillment Started ===",
+        f"Type: {fulfillment.get('fulfillment_type') or d.get('fulfillmentType') or 'n/a'}",
+        f"Industry: {fulfillment.get('industry') or d.get('industry') or 'n/a'}",
+        f"Target points: {_int(fulfillment.get('target_points'))}",
+    ]
+    status = d.get("status") or d.get("message")
+    if status:
+        lines.append(f"Status: {status}")
+    return "\n".join(lines)
+
+
 def format_goods_claim(d: dict) -> str:
     goods = d.get("goods") or []
     lines = [

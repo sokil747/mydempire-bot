@@ -144,6 +144,40 @@ class MydEmpireClient:
             json={"username": username, "operation_id": operation_id},
         )
 
+    async def factory_fulfillment(self, username: str) -> dict:
+        return await self.get_json(
+            f"/player/{username}/factory-fulfillment",
+            headers={"x-mde-actor": username},
+        )
+
+    async def factory_fulfillment_claim(self, username: str) -> dict:
+        return await self._request(
+            "POST",
+            "/factory-fulfillment/claim",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+            json={"username": username},
+        )
+
+    async def factory_fulfillment_start(
+        self, username: str, fulfillment_type: str, industry: str
+    ) -> dict:
+        return await self._request(
+            "POST",
+            "/factory-fulfillment/start",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+            json={
+                "username": username,
+                "fulfillmentType": fulfillment_type,
+                "industry": industry,
+            },
+        )
+
     async def activity_wheel(self, username: str) -> dict:
         return await self.get_json(f"/player/{username}/activity-wheel")
 
