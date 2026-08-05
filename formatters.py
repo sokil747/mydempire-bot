@@ -159,6 +159,29 @@ def format_wheel(w: dict) -> str:
     return "\n".join(lines)
 
 
+def format_wheel_spin(d: dict) -> str:
+    reward = d.get("reward") or d.get("result") or {}
+    lines = ["=== Wheel Spin ==="]
+    if reward.get("reward_label"):
+        lines.append(f"Reward: {reward['reward_label']}")
+    elif reward.get("reward_type"):
+        lines.append(
+            f"Reward: {reward.get('reward_type')} "
+            f"x{reward.get('reward_amount')}"
+        )
+    if d.get("availableSpins") is not None:
+        lines.append(f"Available spins: {_int(d.get('availableSpins'))}")
+    if d.get("currentAP") is not None:
+        lines.append(f"AP: {_int(d.get('currentAP'))}")
+    if d.get("message"):
+        lines.append(d["message"])
+    if d.get("error"):
+        lines.append(d["error"])
+    if not d.get("success"):
+        lines.append("Spin failed.")
+    return "\n".join(lines)
+
+
 def format_maintenance(
     username: str, factories: list, threshold_days: float = 2.0
 ) -> str:

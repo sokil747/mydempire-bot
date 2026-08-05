@@ -181,6 +181,17 @@ class MydEmpireClient:
     async def activity_wheel(self, username: str) -> dict:
         return await self.get_json(f"/player/{username}/activity-wheel")
 
+    async def activity_wheel_spin(self, username: str) -> dict:
+        return await self._request(
+            "POST",
+            f"/player/{username}/activity-wheel/spin",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+            json={"username": username},
+        )
+
     async def notifications(self, username: str) -> dict:
         return await self.get_json(f"/player/{username}/notifications")
 

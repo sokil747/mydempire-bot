@@ -35,6 +35,7 @@ from formatters import (
     format_rewards,
     format_status,
     format_wheel,
+    format_wheel_spin,
 )
 from maintenance import collect_factories
 from mde_api import MydEmpireClient, MydEmpireAPIError, RateLimitedError
@@ -95,6 +96,7 @@ async def cmd_start(message: Message) -> None:
         "/rewards - claimable rewards and withdrawal status\n"
         "/claimhive - claim positive claimable HIVE balance\n"
         "/wheel - activity wheel status\n"
+        "/wheel_spin - spin the wheel while spins are available\n"
         "/ops - empire operations\n"
         "/ops_start - start daily ops automation (LOCAL_SUPPLY x3, 4-7h gaps)\n"
         "/ops_status - current ops automation status\n"
@@ -189,6 +191,20 @@ async def cmd_wheel(message: Message) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("wheel failed")
         await _reply(message, f"Failed to load activity wheel: {exc}")
+        return
+    await _safe_reply(message, text)
+
+
+@dp.message(Command("wheel_spin"))
+async def cmd_wheel_spin(message: Message) -> None:
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        text = await _plan_wheel_text()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("wheel_spin failed")
+        await _reply(message, f"Failed to spin wheel: {exc}")
         return
     await _safe_reply(message, text)
 
@@ -977,6 +993,53 @@ async def _start_fulfillment(prior: dict | None = None) -> str | None:
     return text
 
 
+async def _plan_wheel_text() -> str:
+    """Check activity wheel; spin while available spins remain.
+
+    Spins cost AP. The wheel reports availableSpins; when positive, we spin
+    (re-checking after each spin in case of rewards granting more AP).
+    """
+    w = await api.activity_wheel(config.HIVE_USERNAME)
+    spins = int(w.get("availableSpins") or 0)
+    ap = int(w.get("currentAP") or 0)
+    cost = int(w.get("spinCostAP") or 50)
+    if spins <= 0:
+        return (
+            f"=== Activity Wheel ===\nNo spins available (AP {ap}, "
+            f"cost {cost} AP each)."
+        )
+    lines = [
+        f"=== Activity Wheel ===\nAvailable spins: {spins} (AP {ap}, "
+        f"cost {cost} AP each). Spinning now...",
+        "",
+    ]
+    spun = 0
+    while True:
+        w = await api.activity_wheel(config.HIVE_USERNAME)
+        spins = int(w.get("availableSpins") or 0)
+        ap = int(w.get("currentAP") or 0)
+        if spins <= 0:
+            break
+        if ap < cost:
+            break
+        result = await api.activity_wheel_spin(config.HIVE_USERNAME)
+        spun += 1
+        reward = result.get("reward") or {}
+        label = (
+            reward.get("reward_label")
+            or f"{reward.get('reward_type')} x{reward.get('reward_amount')}"
+            or "unknown"
+        )
+        lines.append(f"Spin {spun}: {label}")
+        if not result.get("success"):
+            break
+        await asyncio.sleep(2)
+    lines.append("")
+    lines.append(f"Total spins this run: {spun}")
+    await _notify("\n".join(lines))
+    return "\n".join(lines)
+
+
 async def _run_daily_tasks_text():
     """Run the daily routine: claim HIVE, check lands, goods, crate, ops."""
     parts = []
@@ -1000,6 +1063,10 @@ async def _run_daily_tasks_text():
         parts.append(await _plan_fulfillment_text())
     except Exception as exc:  # noqa: BLE001
         parts.append(f"Fulfillment plan failed: {exc}")
+    try:
+        parts.append(await _plan_wheel_text())
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"Wheel plan failed: {exc}")
     try:
         parts.append(await _kickoff_ops_automation())
     except Exception as exc:  # noqa: BLE001
