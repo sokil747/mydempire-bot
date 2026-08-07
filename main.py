@@ -2,6 +2,7 @@ import asyncio
 import html
 import logging
 import random
+import sys
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -52,22 +53,31 @@ logging.basicConfig(
 )
 
 _logs_dir = Path(__file__).resolve().parent / "logs"
-_logs_dir.mkdir(parents=True, exist_ok=True)
+try:
+    _logs_dir.mkdir(parents=True, exist_ok=True)
+except OSError as exc:  # noqa: BLE001
+    print(f"[main] warning: cannot create logs dir {_logs_dir}: {exc}",
+          file=sys.stderr)
 
-_file_handler = RotatingFileHandler(
-    _logs_dir / "bot.log",
-    maxBytes=1_000_000,
-    backupCount=5,
-    encoding="utf-8",
-)
-_file_handler.setLevel(logging.INFO)
-_file_handler.setFormatter(
-    logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-)
+try:
+    _file_handler = RotatingFileHandler(
+        _logs_dir / "bot.log",
+        maxBytes=1_000_000,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    _file_handler.setLevel(logging.INFO)
+    _file_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    )
+except OSError as exc:  # noqa: BLE001
+    print(f"[main] warning: cannot open log file: {exc}", file=sys.stderr)
+    _file_handler = None
 
 logger = logging.getLogger("mde_bot")
 logger.setLevel(logging.INFO)
-logger.addHandler(_file_handler)
+if _file_handler is not None:
+    logger.addHandler(_file_handler)
 
 dp = Dispatcher()
 api = MydEmpireClient()
