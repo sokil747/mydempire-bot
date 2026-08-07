@@ -25,7 +25,7 @@ TG_POLLING_TIMEOUT_SECONDS = 30
 
 # ---- scheduled goods claim ----
 # Buffer seconds added after the cooldown expires before claiming.
-GOODS_CLAIM_BUFFER_SECONDS = 1
+GOODS_CLAIM_BUFFER_SECONDS = 3
 
 # Max attempts to check claim readiness at cron time before giving up.
 GOODS_CLAIM_MAX_CHECK_ATTEMPTS = 3
