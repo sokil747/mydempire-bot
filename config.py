@@ -15,33 +15,42 @@ def _required(name: str) -> str:
     return value
 
 
+def _opt_int(name: str) -> int | None:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 TELEGRAM_BOT_TOKEN = _required("TELEGRAM_BOT_TOKEN")
 HIVE_USERNAME = _required("HIVE_USERNAME").replace("@", "").strip().lower()
 HIVE_POSTING_KEY = _required("HIVE_POSTING_KEY")
 MDE_API_BASE = os.getenv("MDE_API_BASE", "https://mydempire-backend-1.onrender.com").rstrip("/")
 
+# ---- daily cron ----
 # Daily time (HH:MM, VPS local time) for the scheduled daily tasks.
-GOODS_CLAIM_CRON_TIME = "02:00"
+GOODS_CLAIM_CRON_TIME = os.getenv("GOODS_CLAIM_CRON_TIME", "02:00")
 
-# Telegram chat id to receive the daily 02:00 report and background
-# notifications. Set to a numeric chat id (e.g. 123456789) to enable.
-# Leave as None to only log notifications (no Telegram message).
-GOODS_CLAIM_NOTIFY_CHAT_ID = None
+# Telegram chat id to receive the daily report and background notifications.
+# Set to a numeric chat id in .env (e.g. GOODS_CLAIM_NOTIFY_CHAT_ID=123456789).
+GOODS_CLAIM_NOTIFY_CHAT_ID = _opt_int("GOODS_CLAIM_NOTIFY_CHAT_ID")
 
-# Telegram chat id for the full daily report specifically. If None, the daily
-# report falls back to GOODS_CLAIM_NOTIFY_CHAT_ID.
-DAILY_REPORT_CHAT_ID = None
+# Telegram chat id for the full daily report specifically.
+DAILY_REPORT_CHAT_ID = _opt_int("DAILY_REPORT_CHAT_ID")
 
 # ---- empire operations automation ----
 # Operation type to run each day (LOCAL_SUPPLY / REGIONAL_TRADE / IMPERIAL_EXPANSION).
-OPS_TYPE = "LOCAL_SUPPLY"
+OPS_TYPE = os.getenv("OPS_TYPE", "LOCAL_SUPPLY")
 # EMP budget to commit per operation.
-OPS_BUDGET = 25
+OPS_BUDGET = int(os.getenv("OPS_BUDGET", "25"))
 # How many operations to start per day.
-OPS_PER_DAY = 3
+OPS_PER_DAY = int(os.getenv("OPS_PER_DAY", "3"))
 
 # ---- factory fulfillment automation ----
 # Fulfillment type to start after claiming (STANDARD_BATCH / BULK_SHIPMENT / GRAND_CONSIGNMENT).
-FULFILLMENT_TYPE = "GRAND_CONSIGNMENT"
+FULFILLMENT_TYPE = os.getenv("FULFILLMENT_TYPE", "GRAND_CONSIGNMENT")
 # Buffer seconds added after estimated completion before claiming.
-FULFILLMENT_CLAIM_BUFFER_SECONDS = 2
+FULFILLMENT_CLAIM_BUFFER_SECONDS = int(os.getenv("FULFILLMENT_CLAIM_BUFFER_SECONDS", "2"))
