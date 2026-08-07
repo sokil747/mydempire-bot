@@ -23,9 +23,14 @@ MDE_API_BASE = os.getenv("MDE_API_BASE", "https://mydempire-backend-1.onrender.c
 # Daily time (HH:MM, VPS local time) for the scheduled daily tasks.
 GOODS_CLAIM_CRON_TIME = "02:00"
 
-# Telegram chat id to receive daily task notifications.
+# Telegram chat id to receive the daily 02:00 report and background
+# notifications. Set to a numeric chat id (e.g. 123456789) to enable.
 # Leave as None to only log notifications (no Telegram message).
 GOODS_CLAIM_NOTIFY_CHAT_ID = None
+
+# Telegram chat id for the full daily report specifically. If None, the daily
+# report falls back to GOODS_CLAIM_NOTIFY_CHAT_ID.
+DAILY_REPORT_CHAT_ID = None
 
 # ---- empire operations automation ----
 # Operation type to run each day (LOCAL_SUPPLY / REGIONAL_TRADE / IMPERIAL_EXPANSION).

@@ -8,6 +8,7 @@ stored time for the next cycle.
 """
 
 import json
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -28,8 +29,14 @@ def _load() -> dict:
         return {}
 
 
-def _save(data: dict) -> None:
-    _STATE_FILE.write_text(json.dumps(data, indent=2))
+def _save(data: dict) -> bool:
+    try:
+        _STATE_FILE.write_text(json.dumps(data, indent=2))
+        return True
+    except OSError as exc:
+        print(f"[scheduler] warning: cannot write {_STATE_FILE}: {exc}",
+              file=sys.stderr)
+        return False
 
 
 def get_planned(key: str) -> datetime | None:

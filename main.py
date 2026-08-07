@@ -3,6 +3,8 @@ import html
 import logging
 import random
 from datetime import datetime, timedelta
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -42,11 +44,30 @@ from formatters import (
 from maintenance import collect_factories
 from mde_api import MydEmpireClient, MydEmpireAPIError, RateLimitedError
 
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    format=LOG_FORMAT,
 )
+
+_logs_dir = Path(__file__).resolve().parent / "logs"
+_logs_dir.mkdir(parents=True, exist_ok=True)
+
+_file_handler = RotatingFileHandler(
+    _logs_dir / "bot.log",
+    maxBytes=1_000_000,
+    backupCount=5,
+    encoding="utf-8",
+)
+_file_handler.setLevel(logging.INFO)
+_file_handler.setFormatter(
+    logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+)
+
 logger = logging.getLogger("mde_bot")
+logger.setLevel(logging.INFO)
+logger.addHandler(_file_handler)
 
 dp = Dispatcher()
 api = MydEmpireClient()
@@ -524,16 +545,37 @@ async def _notify(text: str) -> None:
     """Send a background notification if a chat id is configured, else log."""
     chat_id = config.GOODS_CLAIM_NOTIFY_CHAT_ID
     if not chat_id or _bot is None:
-        logger.info("[daily] %s", text[:500])
+        logger.info("[notify] %s", text[:500])
         return
+    await _send_tg_message(chat_id, text)
+
+
+async def _send_tg_message(chat_id: int, text: str) -> None:
+    """Send a possibly long message to Telegram, splitting over 4000 chars."""
+    if _bot is None:
+        logger.info("[notify] %s", text[:500])
+        return
+    chunk = 3500
+    parts = [text[i : i + chunk] for i in range(0, len(text), chunk)] or [text]
     try:
-        await _bot.send_message(
-            chat_id,
-            f"<pre>{html.escape(text[:4000])}</pre>",
-            parse_mode=ParseMode.HTML,
-        )
+        for part in parts:
+            await _bot.send_message(
+                chat_id,
+                f"<pre>{html.escape(part)}</pre>",
+                parse_mode=ParseMode.HTML,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.exception("notify failed: %s", exc)
+
+
+async def _send_daily_report(text: str) -> None:
+    """Send the full daily report to the configured report chat (or default)."""
+    chat_id = config.DAILY_REPORT_CHAT_ID or config.GOODS_CLAIM_NOTIFY_CHAT_ID
+    if not chat_id or _bot is None:
+        logger.info("[daily report] %s", text[:500])
+        return
+    header = f"===== Daily Report {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} =====\n"
+    await _send_tg_message(chat_id, header + text)
 
 
 async def _plan_goods_claim_text() -> str:
@@ -1165,7 +1207,7 @@ async def _daily_scheduler_loop() -> None:
         await asyncio.sleep((target - now).total_seconds())
         try:
             text = await _run_daily_tasks_text()
-            await _notify(text)
+            await _send_daily_report(text)
         except Exception as exc:  # noqa: BLE001
             logger.exception("daily tasks run failed")
             await _notify(f"Daily tasks failed: {exc}")

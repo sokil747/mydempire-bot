@@ -9,10 +9,10 @@ def collect_factories(overview: dict) -> list[dict]:
         for f in land.get("factories") or []:
             try:
                 ends = datetime.fromisoformat(
-                    f["maintenance_ends_at"].replace("Z", "+00:00")
+                    (f.get("maintenance_ends_at") or "").replace("Z", "+00:00")
                 )
                 days_left = (ends - now).total_seconds() / 86400
-            except (KeyError, ValueError, TypeError):
+            except (KeyError, ValueError, TypeError, AttributeError):
                 days_left = float("inf")
             factories.append(
                 {

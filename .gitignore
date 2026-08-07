@@ -6,3 +6,5 @@ __pycache__/
 bot.log
 
 state.json
+
+logs/
