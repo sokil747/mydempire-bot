@@ -45,6 +45,14 @@ GOODS_SCHEDULER_REFRESH_SECONDS = 300
 # Maximum how far ahead the scheduler may run a task (safety cap).
 GOODS_SCHEDULE_MAX_AHEAD_SECONDS = 30 * 24 * 60 * 60
 
+# ---- activity wheel ----
+# How often to check for available wheel spins outside the daily 02:00 run.
+# A spin earned mid-day sits unused until the next daily run otherwise.
+WHEEL_RECHECK_INTERVAL_SECONDS = 30 * 60
+
+# How often to check while the wheel has no spins available (slower).
+WHEEL_RECHECK_EMPTY_INTERVAL_SECONDS = 6 * 60 * 60
+
 # ---- imperial supply crate ----
 # Cooldown between crate openings (seconds).
 CRATE_COOLDOWN_SECONDS = 3 * 60 * 60

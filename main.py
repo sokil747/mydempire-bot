@@ -1482,6 +1482,31 @@ async def _goods_claim_and_requeue(wait: float = 0.0) -> None:
         _delayed_claim_task = None
 
 
+async def _check_wheel_auto() -> None:
+    """Spin the wheel whenever spins are available, throttled via state.json.
+
+    The daily 02:00 run covers the wheel once, but a spin earned mid-day would
+    otherwise sit unused until the next daily run. This runs on a throttled
+    schedule from the scheduler loop.
+    """
+    last = scheduler.get_planned("wheel_last_check")
+    now = datetime.now().astimezone()
+    if last is not None:
+        wait = (now - last).total_seconds()
+        if wait < intervals.WHEEL_RECHECK_INTERVAL_SECONDS:
+            return
+    w = await api.activity_wheel(config.HIVE_USERNAME)
+    spins = int(w.get("availableSpins") or 0)
+    if spins <= 0:
+        scheduler.set_planned(
+            "wheel_last_check",
+            now + timedelta(seconds=intervals.WHEEL_RECHECK_EMPTY_INTERVAL_SECONDS),
+        )
+        return
+    scheduler.set_planned("wheel_last_check", now)
+    await _plan_wheel_text()
+
+
 async def _scheduler_loop() -> None:
     """Maintenance loop: read state.json, schedule planned actions.
 
@@ -1495,6 +1520,10 @@ async def _scheduler_loop() -> None:
             await _schedule_from_state(now)
         except Exception as exc:  # noqa: BLE001
             logger.warning("scheduler step failed: %s", exc)
+        try:
+            await _check_wheel_auto()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("wheel auto check failed: %s", exc)
         await asyncio.sleep(intervals.GOODS_SCHEDULER_REFRESH_SECONDS)
 
 
