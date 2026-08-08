@@ -96,6 +96,17 @@ class MydEmpireClient:
             json={"username": username, "factory_id": factory_id, "days": days},
         )
 
+    async def factory_upgrade(self, username: str, factory_id: int) -> dict:
+        return await self._request(
+            "POST",
+            "/factory/upgrade",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+            json={"username": username, "factory_id": factory_id},
+        )
+
     async def dashboard(self, username: str) -> dict:
         return await self.get_json(f"/player/{username}/dashboard")
 

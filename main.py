@@ -388,6 +388,74 @@ def _format_pay_result(result: dict, title: str) -> str:
     return "\n".join(lines)
 
 
+async def _auto_upgrade_factories(overview: dict, balance: float) -> tuple[list, list, float]:
+    """Upgrade factories that are ready, while balance covers the cost.
+
+    Each factory upgrade is wrapped in its own try/except so one failure does
+    not stop the remaining upgrades. Returns (upgraded, failed, remaining_balance).
+    """
+    from maintenance import upgrade_ready
+
+    candidates = upgrade_ready(overview)
+    if not candidates:
+        return [], [], balance
+
+    upgraded = []
+    failed = []
+    bal = balance
+    for cand in candidates:
+        if bal < cand["cost"]:
+            break
+        try:
+            result = await api.factory_upgrade(
+                config.HIVE_USERNAME, cand["factory_id"]
+            )
+        except RateLimitedError:
+            failed.append((cand, "rate limited"))
+            await asyncio.sleep(intervals.PAY_MAINT_RETRY_BASE_SECONDS)
+            continue
+        except Exception as exc:  # noqa: BLE001
+            failed.append((cand, str(exc)))
+            continue
+        if result and result.get("success"):
+            upgraded.append(cand)
+            bal -= cand["cost"]
+            await asyncio.sleep(
+                random.uniform(
+                    intervals.PAY_MAINT_DELAY_MIN,
+                    intervals.PAY_MAINT_DELAY_MAX,
+                )
+            )
+        else:
+            failed.append((cand, (result or {}).get("error", "unknown error")))
+    return upgraded, failed, bal
+
+
+def _format_upgrade_result(
+    upgraded: list, failed: list, remaining_balance: float
+) -> str:
+    lines = ["=== Factory Auto-Upgrade ==="]
+    lines.append(f"Upgraded: {len(upgraded)} | Failed: {len(failed)}")
+    lines.append(f"Remaining EMP balance: {_num(remaining_balance)}")
+    if upgraded:
+        lines.append("")
+        lines.append("Upgraded:")
+        for f in upgraded:
+            lines.append(
+                f"  #{f['factory_id']} {f.get('factory_name', '?')} "
+                f"{f.get('tier')} -> {f.get('next_tier')} "
+                f"({_int(f.get('cost'))} EMP)"
+            )
+    if failed:
+        lines.append("")
+        lines.append("Failed:")
+        for f, err in failed:
+            lines.append(
+                f"  #{f['factory_id']} {f.get('factory_name', '?')}: {err}"
+            )
+    return "\n".join(lines)
+
+
 @dp.message(Command("paymaint"))
 async def cmd_paymaint(message: Message) -> None:
     threshold = 2.0
@@ -423,9 +491,10 @@ async def cmd_paymaint(message: Message) -> None:
 
 
 async def _check_lands_text() -> str:
-    """Check factory maintenance and auto-pay due factories if balance positive.
+    """Check factory maintenance, auto-pay due factories, and auto-upgrade.
 
-    Returns the formatted report as a string.
+    Maintenance is paid first, then upgrade-ready factories are upgraded while
+    the remaining EMP balance covers the cost. Returns a formatted report.
     """
     d = await api.dashboard(config.HIVE_USERNAME)
     balance = float(d.get("empBalance") or 0)
@@ -440,24 +509,46 @@ async def _check_lands_text() -> str:
         f"Due within 2 days: {len(due)}",
     ]
 
-    if not due:
+    remaining = balance
+    if due:
+        if balance <= 0:
+            lines.append("")
+            lines.append(
+                "Maintenance needed but EMP balance is not positive. "
+                "Nothing paid."
+            )
+        else:
+            lines.append("")
+            lines.append(
+                f"Balance positive, paying {len(due)} factory/factories..."
+            )
+            result = await _pay_maintenance(factories, 2.0)
+            remaining = balance - sum(
+                float(r.get("emp_spent") or 0) for _, r in result.get("paid", [])
+            )
+            lines.append(_format_pay_result(result, "=== Maintenance Auto-Pay ==="))
+    else:
         lines.append("")
         lines.append("No factories due for maintenance. All good.")
-        return "\n".join(lines)
 
-    if balance <= 0:
+    from maintenance import upgrade_ready
+
+    candidates = upgrade_ready(o)
+    if candidates:
         lines.append("")
         lines.append(
-            "Maintenance needed but EMP balance is not positive. "
-            "Nothing paid."
+            f"Upgrade-ready factories: {len(candidates)} "
+            f"(auto-upgrading while balance allows)..."
         )
-        return "\n".join(lines)
+        upgraded, failed, remaining = await _auto_upgrade_factories(o, remaining)
+        lines.append(
+            _format_upgrade_result(upgraded, failed, remaining)
+        )
+    else:
+        lines.append("")
+        lines.append("No upgrade-ready factories.")
 
-    lines.append("")
-    lines.append(f"Balance positive, paying {len(due)} factory/factories...")
-    result = await _pay_maintenance(factories, 2.0)
-    pay_text = _format_pay_result(result, "=== Maintenance Auto-Pay ===")
-    return "\n".join(lines + [pay_text])
+    return "\n".join(lines)
 
 
 @dp.message(Command("check_lands"))
