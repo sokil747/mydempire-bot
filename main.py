@@ -690,7 +690,14 @@ async def _plan_goods_claim_text() -> str:
     p = await api.goods_preview(config.HIVE_USERNAME)
     if p.get("playerClaimReady"):
         d = await api.goods_claim(config.HIVE_USERNAME)
-        return "=== Goods Claim ===\n" + format_goods_claim(d)
+        text = "=== Goods Claim ===\n" + format_goods_claim(d)
+        if config.AUTO_REDEMPTION:
+            try:
+                text += "\n\n" + await _auto_redeem_goods()
+            except Exception as exc:  # noqa: BLE001
+                text += f"\n\nGoods redemption failed: {exc}"
+                logger.exception("auto redeem failed")
+        return text
 
     remaining = int(
         p.get("remainingGoodsClaimSeconds")
@@ -730,6 +737,38 @@ async def _plan_goods_claim_text() -> str:
             "status": "No active cycle / not ready.",
         }
     )
+
+
+async def _auto_redeem_goods() -> str:
+    """Bulk-redeem all AVAILABLE goods on the inventory tab.
+
+    Called after a goods claim when AUTO_REDEMPTION is enabled. Fetches the
+    inventory, collects every AVAILABLE good id, and submits them all to the
+    redemption burn endpoint in a single bulk call.
+    """
+    inventory = await api.goods_inventory(config.HIVE_USERNAME)
+    items = inventory.get("items") or []
+    available = [
+        item.get("id")
+        for item in items
+        if str(item.get("status") or "AVAILABLE").upper() == "AVAILABLE" and item.get("id")
+    ]
+    if not available:
+        return "=== Goods Redemption ===\nNo AVAILABLE goods to redeem."
+    result = await api.goods_burn_redemption(
+        config.HIVE_USERNAME, available
+    )
+    line = (
+        "=== Goods Redemption ===\n"
+        f"Bulk-redeemed {len(available)} goods."
+    )
+    if result.get("message"):
+        line += f"\n{result['message']}"
+    if result.get("empReward") is not None:
+        line += f"\nEMP reward: {_num(result.get('empReward'))}"
+    if result.get("productValue") is not None:
+        line += f"\nProduct value: {_num(result.get('productValue'))}"
+    return line
 
 
 def _parse_iso(ts: str) -> datetime | None:
@@ -1355,7 +1394,14 @@ async def _run_goods_claim() -> None:
         scheduler.clear_planned(_GOODS_STATE_KEY)
         return
     d = await api.goods_claim(config.HIVE_USERNAME)
-    await _notify("Goods auto-claim:\n" + format_goods_claim(d))
+    claim_text = "Goods auto-claim:\n" + format_goods_claim(d)
+    if config.AUTO_REDEMPTION:
+        try:
+            claim_text += "\n\n" + await _auto_redeem_goods()
+        except Exception as exc:  # noqa: BLE001
+            claim_text += f"\n\nGoods redemption failed: {exc}"
+            logger.exception("auto redeem failed")
+    await _notify(claim_text)
     fresh = await api.goods_preview(config.HIVE_USERNAME)
     remaining = int(
         fresh.get("remainingGoodsClaimSeconds")

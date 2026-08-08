@@ -54,6 +54,23 @@ class MydEmpireClient:
             json={"username": username},
         )
 
+    async def goods_inventory(self, username: str) -> dict:
+        return await self.get_json(
+            f"/goods/{username}/inventory",
+            headers={"x-mde-actor": username},
+        )
+
+    async def goods_burn_redemption(self, username: str, goods_ids: list[int]) -> dict:
+        return await self._request(
+            "POST",
+            f"/goods-redemption/{username}/burn",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+            json={"username": username, "goods_ids": goods_ids},
+        )
+
     async def claim_rewards(self, username: str) -> dict:
         return await self.get_json(
             f"/player/{username}/claim-rewards",

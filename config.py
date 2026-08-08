@@ -25,6 +25,13 @@ def _opt_int(name: str) -> int | None:
         return None
 
 
+def _opt_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name, "").strip().lower()
+    if not value:
+        return default
+    return value in ("1", "true", "yes", "on")
+
+
 TELEGRAM_BOT_TOKEN = _required("TELEGRAM_BOT_TOKEN")
 HIVE_USERNAME = _required("HIVE_USERNAME").replace("@", "").strip().lower()
 HIVE_POSTING_KEY = _required("HIVE_POSTING_KEY")
@@ -54,3 +61,8 @@ OPS_PER_DAY = int(os.getenv("OPS_PER_DAY", "3"))
 FULFILLMENT_TYPE = os.getenv("FULFILLMENT_TYPE", "GRAND_CONSIGNMENT")
 # Buffer seconds added after estimated completion before claiming.
 FULFILLMENT_CLAIM_BUFFER_SECONDS = int(os.getenv("FULFILLMENT_CLAIM_BUFFER_SECONDS", "2"))
+
+# ---- goods auto-redemption ----
+# When enabled (on by default), after goods are claimed the bot bulk-redeems
+# all AVAILABLE goods on the inventory tab via the redemption burn endpoint.
+AUTO_REDEMPTION = _opt_bool("AUTO_REDEMPTION", True)
