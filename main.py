@@ -1056,6 +1056,7 @@ async def _delayed_fulfillment_claim(wait: float) -> None:
                 await _notify(
                     "Fulfillment claimed:\n" + format_fulfillment_claim(claim)
                 )
+                await _start_fulfillment()
                 return
             await asyncio.sleep(intervals.OPS_POLL_INTERVAL_SECONDS)
         await _notify("Fulfillment not ready after polling. Skipped.")
@@ -1163,6 +1164,7 @@ async def _start_fulfillment(prior: dict | None = None) -> str | None:
     industry = _pick_fulfillment_industry(prior)
     if not industry:
         return "Cannot start new fulfillment: no producing industries."
+    await asyncio.sleep(intervals.FULFILLMENT_RESTART_DELAY_SECONDS)
     started = await api.factory_fulfillment_start(
         config.HIVE_USERNAME,
         config.FULFILLMENT_TYPE,

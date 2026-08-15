@@ -60,6 +60,11 @@ CRATE_COOLDOWN_SECONDS = 3 * 60 * 60
 # Maximum crates that can be opened per day.
 CRATE_MAX_PER_DAY = 4
 
+# ---- factory fulfillment restart ----
+# Delay (seconds) between claiming a completed fulfillment and starting a
+# new one.
+FULFILLMENT_RESTART_DELAY_SECONDS = 10
+
 # ---- empire operations automation ----
 # How often to poll for operation readiness while waiting (seconds).
 OPS_POLL_INTERVAL_SECONDS = 60
