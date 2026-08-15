@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 REQUIRED_ACTIVE_DAYS = {"B1": 30, "B2": 60, "B3": 120, "B4": 240}
 NEXT_TIER = {"B1": "B2", "B2": "B3", "B3": "B4", "B4": "B5"}
 UPGRADE_COST_EMP = {"B1": 50, "B2": 100, "B3": 200, "B4": 400}
+TIER_ORDER = {"B1": 0, "B2": 1, "B3": 2, "B4": 3}
 LAND_MAX_LEVEL = {"L1": 3, "L2": 4, "L3": 5}
 
 
@@ -59,6 +60,8 @@ def upgrade_ready(overview: dict) -> list[dict]:
                     "cost": UPGRADE_COST_EMP[tier],
                 }
             )
+    # Upgrade from the lowest level first: B1 -> B4.
+    ready.sort(key=lambda f: TIER_ORDER.get(f["tier"], 99))
     return ready
 
 
