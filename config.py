@@ -66,3 +66,17 @@ FULFILLMENT_CLAIM_BUFFER_SECONDS = int(os.getenv("FULFILLMENT_CLAIM_BUFFER_SECON
 # When enabled (on by default), after goods are claimed the bot bulk-redeems
 # all AVAILABLE goods on the inventory tab via the redemption burn endpoint.
 AUTO_REDEMPTION = _opt_bool("AUTO_REDEMPTION", True)
+
+# ---- daily statistics to Google Sheets ----
+# When enabled (on by default), the 02:00 daily run gathers game statistics
+# and appends a row (one per day, dd/mm/yyyy) to a Google Spreadsheet.
+STATS_ENABLED = _opt_bool("STATS_ENABLED", True)
+
+# ID of the spreadsheet to write daily statistics into (from its URL).
+# STATS_SPREADSHEET_ID=""
+STATS_SPREADSHEET_ID = os.getenv("STATS_SPREADSHEET_ID", "").strip()
+
+# Local path to the Google service-account JSON key with edit access to the
+# spreadsheet. STATS_SPREADSHEET_ID:
+# STATS_SERVICE_ACCOUNT_FILE=""
+STATS_SERVICE_ACCOUNT_FILE = os.getenv("STATS_SERVICE_ACCOUNT_FILE", "").strip()

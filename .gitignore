@@ -8,3 +8,9 @@ bot.log
 state.json
 
 logs/
+
+# Google service-account JSON credentials (never commit)
+gservice*.json
+service-account*.json
+credentials*.json
+*service_account*.json

@@ -1335,6 +1335,23 @@ async def cmd_fulfillment(message: Message) -> None:
     await _safe_reply(message, text)
 
 
+async def _run_stats_to_sheet() -> None:
+    """Gather all statistics and write today's row to the Google Sheet.
+
+    Enabled/disabled via config.STATS_ENABLED (default on). Runs as part of
+    the daily 02:00 routine; notifies Telegram on success or failure.
+    """
+    from stats import run_stats_task
+
+    stats = await run_stats_task(api)
+    if not stats:
+        return
+    await _notify(
+        "Daily statistics written to Google Sheets:\n"
+        + "\n".join(f"{k}: {v}" for k, v in stats.items())
+    )
+
+
 async def _daily_scheduler_loop() -> None:
     """Run the daily tasks at the configured time each day (default 02:00)."""
     while True:
@@ -1353,6 +1370,11 @@ async def _daily_scheduler_loop() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.exception("daily tasks run failed")
             await _notify(f"Daily tasks failed: {exc}")
+        try:
+            await _run_stats_to_sheet()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("stats to sheet failed")
+            await _notify(f"Stats to sheet failed: {exc}")
 
 
 @dp.message(Command("daily"))
