@@ -236,6 +236,21 @@ class MydEmpireClient:
     async def emp_history(self, username: str) -> dict:
         return await self.get_json(f"/player/{username}/emp-history")
 
+    async def goods_redemption_position(self, username: str) -> dict:
+        return await self.get_json(f"/goods-redemption/{username}/position")
+
+    async def goods_redemption_leaderboard(self) -> dict:
+        return await self.get_json("/goods-redemption/leaderboard")
+
+    async def emperor_leaderboard(self) -> dict:
+        return await self.get_json("/leaderboard/emperors")
+
+    async def season_leaderboard(self) -> dict:
+        return await self.get_json("/season/active/leaderboard")
+
+    async def active_season(self) -> dict:
+        return await self.get_json("/season/active")
+
     async def close(self) -> None:
         if self._session is not None and not self._session.closed:
             await self._session.close()

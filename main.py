@@ -691,7 +691,7 @@ async def _plan_goods_claim_text() -> str:
     p = await api.goods_preview(config.HIVE_USERNAME)
     if p.get("playerClaimReady"):
         d = await api.goods_claim(config.HIVE_USERNAME)
-        text = "=== Goods Claim ===\n" + format_goods_claim(d)
+        text = format_goods_claim(d)
         if config.AUTO_REDEMPTION:
             try:
                 text += "\n\n" + await _auto_redeem_goods()
@@ -1239,10 +1239,11 @@ async def _plan_warehouse_clean() -> str:
     cost = d.get("ratCleanupCost")
     cost_txt = f" (cost {_num(cost)} EMP)" if cost else ""
     result = await api.rat_cleanup(config.HIVE_USERNAME)
+    cleanup = format_rat_cleanup(result).splitlines()
+    body = "\n".join(cleanup[1:]) if len(cleanup) > 1 else ""
     text = (
-        f"=== Warehouse ===\nCondition: {condition}{cost_txt}\n"
-        + format_rat_cleanup(result)
-    )
+        f"=== Warehouse ===\nCondition: {condition}{cost_txt}\n{body}"
+    ).strip()
     await _notify(text)
     return text
 
@@ -1282,7 +1283,22 @@ async def _run_daily_tasks_text():
         parts.append(await _kickoff_ops_automation())
     except Exception as exc:  # noqa: BLE001
         parts.append(f"Ops automation failed: {exc}")
-    return "=== Daily Tasks ===\n\n" + "\n\n".join(parts)
+    try:
+        parts.append(await _leaderboard_positions_text())
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"Leaderboard positions failed: {exc}")
+    return "\n\n".join(parts)
+
+
+async def _leaderboard_positions_text() -> str:
+    """Gather leaderboard positions (emperor, season, redemption)."""
+    from leaderboard import gather_leaderboard_report
+
+    health = await api.global_health()
+    reward_pool = (health.get("treasury") or {}).get("rewardPool")
+    return await gather_leaderboard_report(
+        api, config.HIVE_USERNAME, reward_pool
+    )
 
 
 @dp.message(Command("ops_start"))
