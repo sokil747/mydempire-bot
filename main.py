@@ -1351,24 +1351,19 @@ async def cmd_stats(message: Message) -> None:
     await _safe_reply(message, text or "Statistics gathering is disabled.")
 
 
-async def _run_stats_to_sheet() -> None:
+async def _run_stats_to_sheet() -> str:
     """Gather all statistics and write today's row to the Google Sheet.
 
-    Enabled/disabled via config.STATS_ENABLED (default on). Runs as part of
-    the daily 02:00 routine; notifies Telegram on success or failure.
+    Enabled/disabled via config.STATS_ENABLED (default on). Returns a
+    formatted summary (empty if disabled); callers decide how to send it.
     """
     from stats import run_stats_task
 
     stats = await run_stats_task(api)
     if not stats:
-        return
-    await _notify(
-        "Daily statistics written to Google Sheets:\n"
-        + "\n".join(f"{k}: {v}" for k, v in stats.items())
-    )
-    return (
-        "=== Statistics ===\n"
-        + "\n".join(f"{k}: {v}" for k, v in stats.items())
+        return ""
+    return "=== Statistics ===\n" + "\n".join(
+        f"{k}: {v}" for k, v in stats.items()
     )
 
 
@@ -1391,7 +1386,9 @@ async def _daily_scheduler_loop() -> None:
             logger.exception("daily tasks run failed")
             await _notify(f"Daily tasks failed: {exc}")
         try:
-            await _run_stats_to_sheet()
+            text = await _run_stats_to_sheet()
+            if text:
+                await _notify(text)
         except Exception as exc:  # noqa: BLE001
             logger.exception("stats to sheet failed")
             await _notify(f"Stats to sheet failed: {exc}")
