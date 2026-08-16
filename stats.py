@@ -52,6 +52,9 @@ async def gather_stats(api) -> dict:
         "rewardCycleBaseEp": _num(ep.get("rewardCycleEP")),
         "treasuryHealthHive": _num(treasury.get("balance")),
         "packsSold": int(gstats.get("totalPacksSold") or 0),
+        "activeFactories": int(gstats.get("activeFactories") or 0),
+        "buildingFactories": int(gstats.get("buildingFactories") or 0),
+        "inactiveFactories": int(gstats.get("inactiveFactories") or 0),
     }
 
 
@@ -71,8 +74,20 @@ def write_daily_row(stats: dict) -> None:
         "Today's reward cycle base (EP)",
         "Treasury Health (HIVE)",
         "Sold packs",
+        "Active factories",
+        "Building factories",
+        "Inactive factories",
     ]
-    row = [stats["date"], stats["globalProductionEpDay"], stats["rewardCycleBaseEp"], stats["treasuryHealthHive"], stats["packsSold"]]
+    row = [
+        stats["date"],
+        stats["globalProductionEpDay"],
+        stats["rewardCycleBaseEp"],
+        stats["treasuryHealthHive"],
+        stats["packsSold"],
+        stats["activeFactories"],
+        stats["buildingFactories"],
+        stats["inactiveFactories"],
+    ]
 
     client = _sheet_client()
     sheet = client.open_by_key(config.STATS_SPREADSHEET_ID)
