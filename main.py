@@ -135,6 +135,7 @@ async def cmd_start(message: Message) -> None:
         "/ops_start - start daily ops automation (LOCAL_SUPPLY x3, 4-7h gaps)\n"
         "/ops_status - current ops automation status\n"
         "/fulfillment - check factory fulfillment progress & plan claim\n"
+        "/stats - gather statistics and write today's row to Google Sheets\n"
         "/help - this message",
     )
 
@@ -1335,6 +1336,21 @@ async def cmd_fulfillment(message: Message) -> None:
     await _safe_reply(message, text)
 
 
+@dp.message(Command("stats"))
+async def cmd_stats(message: Message) -> None:
+    """Gather all statistics and write today's row to the Google Sheet."""
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        text = await _run_stats_to_sheet()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("stats failed")
+        await _reply(message, f"Failed to gather statistics: {exc}")
+        return
+    await _safe_reply(message, text or "Statistics gathering is disabled.")
+
+
 async def _run_stats_to_sheet() -> None:
     """Gather all statistics and write today's row to the Google Sheet.
 
@@ -1348,6 +1364,10 @@ async def _run_stats_to_sheet() -> None:
         return
     await _notify(
         "Daily statistics written to Google Sheets:\n"
+        + "\n".join(f"{k}: {v}" for k, v in stats.items())
+    )
+    return (
+        "=== Statistics ===\n"
         + "\n".join(f"{k}: {v}" for k, v in stats.items())
     )
 
