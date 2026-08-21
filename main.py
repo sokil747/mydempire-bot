@@ -394,10 +394,30 @@ async def _auto_upgrade_factories(overview: dict, balance: float) -> tuple[list,
 
     Each factory upgrade is wrapped in its own try/except so one failure does
     not stop the remaining upgrades. Returns (upgraded, failed, remaining_balance).
+
+    If an active season industry is set, factories of that industry are
+    prioritized in the upgrade queue.
     """
     from maintenance import upgrade_ready
 
     candidates = upgrade_ready(overview)
+
+    # Priority: if there's an active season industry, factories of that
+    # industry are moved to the front of the queue (before tier sorting).
+    season_industry = None
+    try:
+        season = await api.active_season()
+        season_data = season.get("season")
+        if season_data:
+            season_industry = season_data.get("industry")
+    except Exception:  # noqa: BLE001
+        logger.exception("failed to fetch active season")
+    if season_industry:
+        def _priority(c):
+            # 0 = matches season industry, 1 = otherwise; then by tier number
+            industry_match = 0 if c.get("industry") == season_industry else 1
+            return (industry_match, TIER_ORDER.get(c["tier"], 99))
+        candidates.sort(key=_priority)
     if not candidates:
         return [], [], balance
 
@@ -1043,7 +1063,12 @@ def _pick_fulfillment_industry(d: dict) -> str | None:
 
 
 async def _delayed_fulfillment_claim(wait: float) -> None:
-    """Wait until the estimated completion, poll to 100%, then claim."""
+    """Wait until the estimated completion, poll to 100%, then claim and start a new fulfillment.
+
+    After claiming, waits 10 seconds (FULFILLMENT_RESTART_DELAY_SECONDS) before
+    attempting to start a new fulfillment. If a cooldown is active, plans waiting
+    time until the cooldown ends.
+    """
     global _fulfillment_claim_task
     try:
         await asyncio.sleep(wait)
@@ -1057,7 +1082,34 @@ async def _delayed_fulfillment_claim(wait: float) -> None:
                 await _notify(
                     "Fulfillment claimed:\n" + format_fulfillment_claim(claim)
                 )
-                await _start_fulfillment()
+                # Wait 10 seconds before starting new fulfillment
+                await asyncio.sleep(intervals.FULFILLMENT_RESTART_DELAY_SECONDS)
+                # Try to start new fulfillment
+                started = await _start_fulfillment()
+                if started:
+                    await _notify(
+                        "Fulfillment started:\n" + started
+                    )
+                else:
+                    # Cooldown active - plan waiting time
+                    cooldown = prior.get("fulfillmentCooldown") or {}
+                    if cooldown.get("active"):
+                        cooldown_ends = cooldown.get("cooldownEndsAt")
+                        if cooldown_ends:
+                            from datetime import datetime, timezone
+                            ends = datetime.fromisoformat(cooldown_ends.replace("Z", "+00:00"))
+                            now = datetime.now(timezone.utc)
+                            wait_seconds = max(0, (ends - now).total_seconds())
+                            await _notify(
+                                f"Cooldown active until {_fmt_iso(cooldown_ends)}. "
+                                f"Will start new fulfillment in {_fmt_remaining(wait_seconds)}."
+                            )
+                            # Schedule future claim after cooldown
+                            # Note: scheduler will handle this via its own timing
+                    else:
+                        await _notify(
+                            "Could not start new fulfillment: no producing industries."
+                        )
                 return
             await asyncio.sleep(intervals.OPS_POLL_INTERVAL_SECONDS)
         await _notify("Fulfillment not ready after polling. Skipped.")
@@ -1066,6 +1118,74 @@ async def _delayed_fulfillment_claim(wait: float) -> None:
         await _notify(f"Fulfillment auto-claim failed: {exc}")
     finally:
         _fulfillment_claim_task = None
+
+
+async def _fulfillment_status_text() -> str:
+    """Check current fulfillment status and return a formatted summary.
+
+    Includes: active fulfillment info, progress, time until 100%,
+    cooldown status, and whether a new fulfillment is scheduled.
+    """
+    try:
+        d = await api.factory_fulfillment(config.HIVE_USERNAME)
+        active = d.get("activeFulfillment") or {}
+        progress = d.get("activeProgress") or {}
+        lines = ["=== Factory Fulfillment ==="]
+
+        if not active:
+            lines.append("No active fulfillment.")
+            cooldown = d.get("fulfillmentCooldown") or {}
+            if cooldown.get("active"):
+                co_end = cooldown.get("cooldownEndsAt")
+                if co_end:
+                    lines.append(f"Cooldown until {co_end}.")
+                else:
+                    lines.append("Cooldown active, time unknown.")
+            else:
+                lines.append("No cooldown. Use /fulfillment to start a new one.")
+            return "\n".join(lines)
+
+        pct = float(progress.get("percent") or 0)
+        complete = progress.get("isTargetComplete") or pct >= 100
+
+        lines.append(f"Active: {active.get('fulfillment_type')} ({active.get('industry')})")
+        lines.append(f"Progress: {_int(progress.get('progress'))} / {_int(progress.get('target'))} ({_num(pct)}%)")
+        
+        if complete:
+            lines.append("Target reached! Claimed and new fulfillment scheduled.")
+        else:
+            # Estimate remaining time
+            elapsed = float(active.get("elapsed_seconds") or 0)
+            current = float(progress.get("progress") or 0)
+            target = float(active.get("target_points") or progress.get("target") or 0)
+            if target > 0 and current < target and elapsed > 0:
+                rate = current / elapsed
+                remaining = target - current
+                remaining_secs = max(0, remaining / rate)
+                # Format minutes and hours
+                mins = int(remaining_secs // 60)
+                hours = int(remaining_secs // 3600)
+                if hours > 0:
+                    lines.append(f"Estimated 100% in {hours}h {mins%60}m")
+                else:
+                    lines.append(f"Estimated 100% in {mins}m")
+            else:
+                lines.append("Cannot estimate completion time.")
+        
+        # Check cooldown for new fulfillment
+        cooldown = d.get("fulfillmentCooldown") or {}
+        if cooldown.get("active"):
+            lines.append(
+                f"Cooldown until {d.get('fulfillmentCooldown', {}).get('cooldownEndsAt', 'unknown')}. "
+                "New fulfillment will start after cooldown."
+            )
+        else:
+            lines.append("No cooldown. New fulfillment can be started.")
+
+        return "\n".join(lines)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("fulfillment status check failed")
+        return f"Fulfillment status check failed: {exc}"
 
 
 async def _plan_fulfillment_text() -> str:
@@ -1283,10 +1403,11 @@ async def _run_daily_tasks_text():
         parts.append(await _kickoff_ops_automation())
     except Exception as exc:  # noqa: BLE001
         parts.append(f"Ops automation failed: {exc}")
+    # Add fulfillment status section
     try:
-        parts.append(await _leaderboard_positions_text())
+        parts.append(await _fulfillment_status_text())
     except Exception as exc:  # noqa: BLE001
-        parts.append(f"Leaderboard positions failed: {exc}")
+        parts.append(f"Fulfillment status check failed: {exc}")
     return "\n\n".join(parts)
 
 

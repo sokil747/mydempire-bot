@@ -16,6 +16,16 @@ def _tier_short(blueprint_tier: str | None) -> str | None:
     return None
 
 
+def _industry_from_tier(blueprint_tier: str | None) -> str | None:
+    """Extract industry string from blueprint_tier, e.g. 'TEXTILE_B2' -> 'TEXTILE'."""
+    if not blueprint_tier:
+        return None
+    parts = str(blueprint_tier).upper().split("_")
+    if len(parts) >= 2:
+        return parts[0]
+    return None
+
+
 def upgrade_ready(overview: dict) -> list[dict]:
     """Find factories that can be upgraded right now.
 
@@ -23,7 +33,7 @@ def upgrade_ready(overview: dict) -> list[dict]:
       status == ACTIVE, not max tier (B5), land level cap not reached,
       active_days >= required days, and the land does not already hold a B5
       (when the next tier would be B5).
-    Returns a list of dicts: factory_id, factory_name, tier, next_tier, cost.
+    Returns a list of dicts: factory_id, factory_name, tier, next_tier, cost, industry.
     """
     ready = []
     for land in overview.get("lands") or []:
@@ -51,6 +61,7 @@ def upgrade_ready(overview: dict) -> list[dict]:
                 continue
             if next_tier == "B5" and has_b5:
                 continue
+            industry = _industry_from_tier(f.get("blueprint_tier"))
             ready.append(
                 {
                     "factory_id": f.get("id"),
@@ -58,6 +69,7 @@ def upgrade_ready(overview: dict) -> list[dict]:
                     "tier": tier,
                     "next_tier": next_tier,
                     "cost": UPGRADE_COST_EMP[tier],
+                    "industry": industry,
                 }
             )
     # Upgrade from the lowest level first: B1 -> B4.
