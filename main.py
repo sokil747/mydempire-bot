@@ -42,7 +42,7 @@ from formatters import (
     format_wheel,
     format_wheel_spin,
 )
-from maintenance import collect_factories
+from maintenance import collect_factories, TIER_ORDER
 from mde_api import MydEmpireClient, MydEmpireAPIError, RateLimitedError
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
