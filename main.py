@@ -804,7 +804,9 @@ def _parse_iso(ts: str) -> datetime | None:
 async def _crate_status() -> dict:
     """Determine current crate availability from history + cooldown rules.
 
-    Only the first free crate of the day is considered openable.
+    Supports up to CRATE_MAX_CLAIMS_PER_DAY claims per day,
+    with a minimum 3-hour cooldown between claims.
+    Before each claim, checks if 15 EMP is available on balance.
     """
     hist = await api.crate_history(config.HIVE_USERNAME)
     entries = hist.get("history") or []
@@ -822,27 +824,44 @@ async def _crate_status() -> dict:
         if opened_utc.date() == now.date():
             opened_today += 1
 
-    d = await api.dashboard(config.HIVE_USERNAME)
-    eligible = float(d.get("globalSharePercent") or 0) >= 1.5
-
+    # Check minimum cooldown between claims
     cooldown_until = None
     if last_opened is not None:
         cooldown_until = last_opened + timedelta(
             seconds=intervals.CRATE_COOLDOWN_SECONDS
         )
 
-    can_open = opened_today == 0 and eligible
+    # Count how many claims are possible today respecting cooldown
+    # A claim is possible if: opened_today < max AND (no cooldown or cooldown elapsed)
+    can_open_more = opened_today < config.CRATE_MAX_CLAIMS_PER_DAY
+    cooldown_elapsed = True
+    if last_opened is not None and cooldown_until is not None:
+        cooldown_elapsed = now >= cooldown_until
+
+    # Check 15 EMP balance before allowing a claim
+    try:
+        d = await api.dashboard(config.HIVE_USERNAME)
+        emp_balance = float(d.get("empBalance") or 0)
+        has_enough_emp = emp_balance >= 15
+    except Exception:  # noqa: BLE001
+        has_enough_emp = False
+
+    # Determine if we can open a crate
+    can_open = can_open_more and cooldown_elapsed and has_enough_emp
+    opened_today = min(opened_today, config.CRATE_MAX_CLAIMS_PER_DAY)
+
+    # Determine cooldown status
     cooldown_remaining = None
-    if can_open and cooldown_until is not None and now < cooldown_until:
-        can_open = False
-        cooldown_remaining = str(cooldown_until - now)
+    if last_opened is not None and cooldown_until is not None:
+        if now < cooldown_until:
+            cooldown_remaining = str(cooldown_until - now)
 
     return {
         "can_open": can_open,
         "opened_today": opened_today,
-        "eligible": eligible,
+        "max_today": config.CRATE_MAX_CLAIMS_PER_DAY,
+        "eligible": float(d.get("globalSharePercent") or 0) >= 1.5,
         "last_opened": last_opened,
-        "cooldown_until": cooldown_until,
         "cooldown_remaining": cooldown_remaining,
     }
 

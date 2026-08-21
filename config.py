@@ -80,3 +80,8 @@ STATS_SPREADSHEET_ID = os.getenv("STATS_SPREADSHEET_ID", "").strip()
 # spreadsheet. STATS_SPREADSHEET_ID:
 # STATS_SERVICE_ACCOUNT_FILE=""
 STATS_SERVICE_ACCOUNT_FILE = os.getenv("STATS_SERVICE_ACCOUNT_FILE", "").strip()
+
+# ---- crate claiming ----
+# Maximum number of Imperial Supply Crates that can be opened per day.
+# Default: 4 (set to 1 for original "1 free crate per day" behavior).
+CRATE_MAX_CLAIMS_PER_DAY = int(os.getenv("CRATE_MAX_CLAIMS_PER_DAY", "4"))
