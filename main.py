@@ -872,8 +872,8 @@ async def _plan_crate_text() -> str:
     if status["can_open"]:
         d = await api.open_imperial_crate(config.HIVE_USERNAME)
         return "=== Imperial Supply Crate ===\n" + format_crate_open(d)
-    if status["opened_today"] >= 1:
-        reason = "Already opened today (only 1 free crate per day)."
+    if status["opened_today"] >= config.CRATE_MAX_CLAIMS_PER_DAY:
+        reason = f"Already opened today ({config.CRATE_MAX_CLAIMS_PER_DAY} crates per day limit)."
     elif not status["eligible"]:
         reason = "Not eligible for free crate (need globalShare >= 1.5%)."
     elif status["cooldown_remaining"]:
