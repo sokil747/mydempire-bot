@@ -1,9 +1,15 @@
+import asyncio
+import logging
+from datetime import datetime, timezone
+
 import aiohttp
 
 import config
 import intervals
 
 TIMEOUT = aiohttp.ClientTimeout(total=intervals.API_TIMEOUT_SECONDS)
+
+logger = logging.getLogger("mde_bot.api")
 
 
 class MydEmpireAPIError(Exception):
@@ -18,14 +24,133 @@ class MydEmpireClient:
     def __init__(self, base_url: str = config.MDE_API_BASE) -> None:
         self.base_url = base_url.rstrip("/")
         self._session: aiohttp.ClientSession | None = None
+        self._token: str | None = None
+        self._token_expires_at: datetime | None = None
+        self._auth_lock = asyncio.Lock()
+
+    def _is_token_valid(self) -> bool:
+        if not self._token or not self._token_expires_at:
+            return False
+        # consider token valid if it expires more than 60s from now
+        now = datetime.now(timezone.utc)
+        return self._token_expires_at > now.replace(tzinfo=timezone.utc) + __import__("datetime").timedelta(seconds=60)
+
+    async def _ensure_auth(self, force: bool = False) -> None:
+        if not force and self._is_token_valid():
+            return
+        async with self._auth_lock:
+            if not force and self._is_token_valid():
+                return
+            # need Hive posting key
+            wif = config.HIVE_POSTING_KEY.strip()
+            username = config.HIVE_USERNAME
+            if not wif or not username:
+                logger.warning("HIVE_POSTING_KEY or HIVE_USERNAME missing, cannot authenticate")
+                return
+            try:
+                # 1. get challenge - use raw request without auth header to avoid recursion
+                if self._session is None or self._session.closed:
+                    self._session = aiohttp.ClientSession(timeout=TIMEOUT)
+                url = f"{self.base_url}/auth/challenge"
+                async with self._session.request("POST", url, json={"username": username}) as resp:
+                    if resp.status == 429:
+                        raise RateLimitedError(f"HTTP 429 for {url}")
+                    if resp.status >= 400:
+                        body = (await resp.text())[:500]
+                        raise MydEmpireAPIError(f"HTTP {resp.status} for {url}: {body}")
+                    data = await resp.json()
+                if not data.get("success", True):
+                    raise MydEmpireAPIError(data.get("error", "Unknown auth challenge error"))
+                challenge = data.get("challenge")
+                challenge_id = data.get("challengeId")
+                if not challenge or not challenge_id:
+                    raise MydEmpireAPIError("Invalid challenge response")
+                # 2. sign challenge with posting key (hex encoding matches backend expectation)
+                try:
+                    from beemgraphenebase.ecdsasig import sign_message
+                except ImportError as exc:
+                    raise MydEmpireAPIError(f"beem not installed for signing: {exc}")
+                signature = sign_message(challenge, wif).hex()
+                # 3. verify
+                url2 = f"{self.base_url}/auth/verify"
+                async with self._session.request(
+                    "POST", url2, json={"username": username, "challengeId": challenge_id, "signature": signature}
+                ) as resp:
+                    if resp.status == 429:
+                        raise RateLimitedError(f"HTTP 429 for {url2}")
+                    if resp.status >= 400:
+                        body = (await resp.text())[:500]
+                        raise MydEmpireAPIError(f"HTTP {resp.status} for {url2}: {body}")
+                    vdata = await resp.json()
+                if not vdata.get("success"):
+                    raise MydEmpireAPIError(vdata.get("error", "Unknown auth verify error"))
+                token = vdata.get("token")
+                expires_at_raw = vdata.get("expiresAt")
+                if not token:
+                    raise MydEmpireAPIError("No token in verify response")
+                self._token = token
+                try:
+                    self._token_expires_at = datetime.fromisoformat(expires_at_raw.replace("Z", "+00:00")) if expires_at_raw else None
+                except Exception:
+                    self._token_expires_at = None
+                logger.info("MydEmpire session refreshed, expires %s", expires_at_raw)
+            except RateLimitedError:
+                raise
+            except Exception as exc:
+                logger.exception("auth refresh failed: %s", exc)
+                # keep old token if any, but clear on auth error to force retry next time
+                # don't clear token here, let caller handle 401
+                raise MydEmpireAPIError(f"Auth failed: {exc}") from exc
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
+        # skip auth for auth endpoints themselves
+        is_auth_path = path.startswith("/auth/")
+        # ensure we have a token for non-auth paths if possible, but don't fail if no posting key
+        if not is_auth_path and not self._is_token_valid():
+            try:
+                await self._ensure_auth()
+            except Exception as exc:
+                # log but continue without token - request may still succeed for public endpoints or fail with 401 which will trigger retry
+                logger.warning("pre-request auth ensure failed: %s", exc)
+
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(timeout=TIMEOUT)
         url = f"{self.base_url}{path}"
+
+        # inject Authorization if we have a token and not already set
+        headers = kwargs.get("headers") or {}
+        # copy to avoid mutating caller dict
+        headers = dict(headers)
+        if self._token and "Authorization" not in headers and not is_auth_path:
+            headers["Authorization"] = f"Bearer {self._token}"
+        kwargs["headers"] = headers
+
         async with self._session.request(method, url, **kwargs) as resp:
             if resp.status == 429:
                 raise RateLimitedError(f"HTTP 429 rate limited for {url}")
+            if resp.status == 401:
+                body = (await resp.text())[:500]
+                # session expired - try to refresh once and retry
+                if not is_auth_path and "session" in body.lower():
+                    logger.warning("401 session expired for %s, refreshing token", path)
+                    try:
+                        await self._ensure_auth(force=True)
+                    except Exception as exc:
+                        raise MydEmpireAPIError(f"HTTP 401 for {url}: {body}") from exc
+                    # retry once with new token
+                    headers["Authorization"] = f"Bearer {self._token}"
+                    kwargs["headers"] = headers
+                    async with self._session.request(method, url, **kwargs) as resp2:
+                        if resp2.status == 429:
+                            raise RateLimitedError(f"HTTP 429 rate limited for {url} (retry)")
+                        if resp2.status >= 400:
+                            body2 = (await resp2.text())[:500]
+                            raise MydEmpireAPIError(f"HTTP {resp2.status} for {url}: {body2}")
+                        data = await resp2.json()
+                    if not data.get("success", True):
+                        raise MydEmpireAPIError(data.get("error", "Unknown API error"))
+                    return data
+                raise MydEmpireAPIError(f"HTTP {resp.status} for {url}: {body}")
             if resp.status >= 400:
                 body = (await resp.text())[:300]
                 raise MydEmpireAPIError(f"HTTP {resp.status} for {url}: {body}")

@@ -1112,32 +1112,17 @@ async def _delayed_fulfillment_claim(wait: float) -> None:
                 )
                 # Wait 10 seconds before starting new fulfillment
                 await asyncio.sleep(intervals.FULFILLMENT_RESTART_DELAY_SECONDS)
-                # Try to start new fulfillment
-                started = await _start_fulfillment()
-                if started:
-                    await _notify(
-                        "Fulfillment started:\n" + started
-                    )
-                else:
-                    # Cooldown active - plan waiting time
-                    cooldown = prior.get("fulfillmentCooldown") or {}
-                    if cooldown.get("active"):
-                        cooldown_ends = cooldown.get("cooldownEndsAt")
-                        if cooldown_ends:
-                            from datetime import datetime, timezone
-                            ends = datetime.fromisoformat(cooldown_ends.replace("Z", "+00:00"))
-                            now = datetime.now(timezone.utc)
-                            wait_seconds = max(0, (ends - now).total_seconds())
-                            await _notify(
-                                f"Cooldown active until {_fmt_iso(cooldown_ends)}. "
-                                f"Will start new fulfillment in {_fmt_remaining(wait_seconds)}."
-                            )
-                            # Schedule future claim after cooldown
-                            # Note: scheduler will handle this via its own timing
-                    else:
-                        await _notify(
-                            "Could not start new fulfillment: no producing industries."
-                        )
+                try:
+                    started = await _start_fulfillment()
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("auto-start fulfillment failed")
+                    await _notify(f"Auto-start fulfillment failed: {exc}")
+                    return
+                if started and "Cannot start" not in started:
+                    # _start_fulfillment already notified
+                    pass
+                elif started:
+                    await _notify(started)
                 return
             await asyncio.sleep(intervals.OPS_POLL_INTERVAL_SECONDS)
         await _notify("Fulfillment not ready after polling. Skipped.")
@@ -1431,11 +1416,10 @@ async def _run_daily_tasks_text():
         parts.append(await _kickoff_ops_automation())
     except Exception as exc:  # noqa: BLE001
         parts.append(f"Ops automation failed: {exc}")
-    # Add fulfillment status section
     try:
-        parts.append(await _fulfillment_status_text())
+        parts.append(await _leaderboard_positions_text())
     except Exception as exc:  # noqa: BLE001
-        parts.append(f"Fulfillment status check failed: {exc}")
+        parts.append(f"Leaderboard check failed: {exc}")
     return "\n\n".join(parts)
 
 
