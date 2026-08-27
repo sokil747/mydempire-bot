@@ -2,12 +2,18 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+import asyncio
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
 import aiohttp
 
 import config
 import intervals
 
 TIMEOUT = aiohttp.ClientTimeout(total=intervals.API_TIMEOUT_SECONDS)
+_TOKEN_FILE = Path(__file__).resolve().parent / ".mde_token.json"
 
 logger = logging.getLogger("mde_bot.api")
 
@@ -27,13 +33,42 @@ class MydEmpireClient:
         self._token: str | None = None
         self._token_expires_at: datetime | None = None
         self._auth_lock = asyncio.Lock()
+        self._load_token()
+
+    def _load_token(self) -> None:
+        try:
+            if _TOKEN_FILE.exists():
+                data = json.loads(_TOKEN_FILE.read_text())
+                token = data.get("token")
+                exp = data.get("expiresAt")
+                if token and exp:
+                    try:
+                        exp_dt = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+                        if exp_dt > datetime.now(timezone.utc) + timedelta(seconds=60):
+                            self._token = token
+                            self._token_expires_at = exp_dt
+                            logger.info("Loaded cached MydEmpire token, expires %s", exp)
+                    except Exception:
+                        pass
+        except Exception as exc:
+            logger.warning("Failed to load token file: %s", exc)
+
+    def _save_token(self, token: str, expires_at_raw: str | None) -> None:
+        try:
+            _TOKEN_FILE.write_text(json.dumps({"token": token, "expiresAt": expires_at_raw}))
+            try:
+                _TOKEN_FILE.chmod(0o600)
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.warning("Failed to save token file: %s", exc)
 
     def _is_token_valid(self) -> bool:
         if not self._token or not self._token_expires_at:
             return False
         # consider token valid if it expires more than 60s from now
         now = datetime.now(timezone.utc)
-        return self._token_expires_at > now.replace(tzinfo=timezone.utc) + __import__("datetime").timedelta(seconds=60)
+        return self._token_expires_at > now + timedelta(seconds=60)
 
     async def _ensure_auth(self, force: bool = False) -> None:
         if not force and self._is_token_valid():
@@ -52,13 +87,19 @@ class MydEmpireClient:
                 if self._session is None or self._session.closed:
                     self._session = aiohttp.ClientSession(timeout=TIMEOUT)
                 url = f"{self.base_url}/auth/challenge"
-                async with self._session.request("POST", url, json={"username": username}) as resp:
-                    if resp.status == 429:
-                        raise RateLimitedError(f"HTTP 429 for {url}")
-                    if resp.status >= 400:
-                        body = (await resp.text())[:500]
-                        raise MydEmpireAPIError(f"HTTP {resp.status} for {url}: {body}")
-                    data = await resp.json()
+                # retry once on 429 with backoff
+                for attempt in range(2):
+                    async with self._session.request("POST", url, json={"username": username}) as resp:
+                        if resp.status == 429:
+                            if attempt == 0:
+                                await asyncio.sleep(5)
+                                continue
+                            raise RateLimitedError(f"HTTP 429 for {url}")
+                        if resp.status >= 400:
+                            body = (await resp.text())[:500]
+                            raise MydEmpireAPIError(f"HTTP {resp.status} for {url}: {body}")
+                        data = await resp.json()
+                    break
                 if not data.get("success", True):
                     raise MydEmpireAPIError(data.get("error", "Unknown auth challenge error"))
                 challenge = data.get("challenge")
@@ -93,6 +134,7 @@ class MydEmpireClient:
                     self._token_expires_at = datetime.fromisoformat(expires_at_raw.replace("Z", "+00:00")) if expires_at_raw else None
                 except Exception:
                     self._token_expires_at = None
+                self._save_token(token, expires_at_raw)
                 logger.info("MydEmpire session refreshed, expires %s", expires_at_raw)
             except RateLimitedError:
                 raise

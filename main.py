@@ -717,7 +717,12 @@ async def _plan_goods_claim_text() -> str:
     when due (no polling).
     """
     global _delayed_claim_task
-    p = await api.goods_preview(config.HIVE_USERNAME)
+    try:
+        p = await api.goods_preview(config.HIVE_USERNAME)
+    except MydEmpireAPIError as exc:
+        if "Goods view is private" in str(exc):
+            return "Goods claim: view is private — set to Public in Factory Goods → Inventory to enable auto-claim."
+        raise
     if p.get("playerClaimReady"):
         d = await api.goods_claim(config.HIVE_USERNAME)
         text = format_goods_claim(d)
