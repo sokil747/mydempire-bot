@@ -33,6 +33,7 @@ class MydEmpireClient:
         self._token: str | None = None
         self._token_expires_at: datetime | None = None
         self._auth_lock = asyncio.Lock()
+        self._auth_retry_after: datetime | None = None
         self._load_token()
 
     def _load_token(self) -> None:
@@ -73,9 +74,14 @@ class MydEmpireClient:
     async def _ensure_auth(self, force: bool = False) -> None:
         if not force and self._is_token_valid():
             return
+        # respect rate-limit cooldown
+        if self._auth_retry_after and datetime.now(timezone.utc) < self._auth_retry_after:
+            raise RateLimitedError(f"Auth rate limited until {self._auth_retry_after.isoformat()}")
         async with self._auth_lock:
             if not force and self._is_token_valid():
                 return
+            if self._auth_retry_after and datetime.now(timezone.utc) < self._auth_retry_after:
+                raise RateLimitedError(f"Auth rate limited until {self._auth_retry_after.isoformat()}")
             # need Hive posting key
             wif = config.HIVE_POSTING_KEY.strip()
             username = config.HIVE_USERNAME
@@ -136,7 +142,9 @@ class MydEmpireClient:
                     self._token_expires_at = None
                 self._save_token(token, expires_at_raw)
                 logger.info("MydEmpire session refreshed, expires %s", expires_at_raw)
-            except RateLimitedError:
+            except RateLimitedError as exc:
+                self._auth_retry_after = datetime.now(timezone.utc) + timedelta(minutes=5)
+                logger.warning("Auth rate limited, backing off until %s", self._auth_retry_after.isoformat())
                 raise
             except Exception as exc:
                 logger.exception("auth refresh failed: %s", exc)
