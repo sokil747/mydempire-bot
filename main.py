@@ -6,7 +6,6 @@ import sys
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatAction, ParseMode
@@ -677,9 +676,6 @@ async def _send_tg_message(chat_id: int, text: str) -> None:
     if _bot is None:
         logger.info("[notify] %s", text[:500])
         return
-    # Refresh bot session if needed (handles expired sessions)
-    if _bot.session and _bot.session.closed:
-        _bot._session = aiohttp.ClientSession(timeout=intervals.TG_POLLING_TIMEOUT_SECONDS)
     chunk = 3500
     parts = [text[i : i + chunk] for i in range(0, len(text), chunk)] or [text]
     try:
@@ -691,12 +687,6 @@ async def _send_tg_message(chat_id: int, text: str) -> None:
             )
     except Exception as exc:  # noqa: BLE001
         logger.exception("notify failed: %s", exc)
-        # Bot session might be expired - try to refresh
-        if "403" in str(exc) or "401" in str(exc):
-            try:
-                _bot._session = aiohttp.ClientSession(timeout=intervals.TG_POLLING_TIMEOUT_SECONDS)
-            except Exception:
-                pass
 
 
 async def _send_daily_report(text: str) -> None:
