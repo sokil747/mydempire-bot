@@ -811,6 +811,7 @@ async def _auto_redeem_goods() -> str:
             for item in items
             if str(item.get("status") or "AVAILABLE").upper() == "AVAILABLE" and item.get("id")
         ]
+        skipped = []
     elif config.AUTO_REDEMPTION_MODE == "EXCEPT_TICKET_MINT":
         available = []
         skipped = []
@@ -825,25 +826,26 @@ async def _auto_redeem_goods() -> str:
     else:  # NONE
         return "=== Goods Redemption ===\nAuto-redemption disabled."
 
-    if not available:
-        msg = "=== Goods Redemption ===\nNo AVAILABLE goods to redeem."
-        if skipped:
-            msg += f"\nSkipped {len(skipped)} goods reserved for Imperial Ticket Mint."
-        return msg
-    result = await api.goods_burn_redemption(
-        config.HIVE_USERNAME, available
-    )
+    if not available and not skipped:
+        return "=== Goods Redemption ===\nNo AVAILABLE goods to redeem."
+    
+    result = None
+    if available:
+        result = await api.goods_burn_redemption(
+            config.HIVE_USERNAME, available
+        )
+    
     line = (
         "=== Goods Redemption ===\n"
-        f"Bulk-redeemed {len(available)} goods."
+        f"Redeemed: {len(available)} goods"
     )
     if skipped:
-        line += f"\nSkipped {len(skipped)} goods reserved for Imperial Ticket Mint."
-    if result.get("message"):
+        line += f"\nSkipped: {len(skipped)} goods reserved for Imperial Ticket Mint"
+    if result and result.get("message"):
         line += f"\n{result['message']}"
-    if result.get("empReward") is not None:
+    if result and result.get("empReward") is not None:
         line += f"\nEMP reward: {_num(result.get('empReward'))}"
-    if result.get("productValue") is not None:
+    if result and result.get("productValue") is not None:
         line += f"\nProduct value: {_num(result.get('productValue'))}"
     return line
 
