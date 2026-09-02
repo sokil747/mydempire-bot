@@ -765,21 +765,71 @@ async def _plan_goods_claim_text() -> str:
 
 
 async def _auto_redeem_goods() -> str:
-    """Bulk-redeem all AVAILABLE goods on the inventory tab.
+    """Bulk-redeem AVAILABLE goods on the inventory tab.
 
     Called after a goods claim when AUTO_REDEMPTION is enabled. Fetches the
     inventory, collects every AVAILABLE good id, and submits them all to the
     redemption burn endpoint in a single bulk call.
+
+    Filtering based on AUTO_REDEMPTION_MODE:
+    - ALL         : redeem everything
+    - EXCEPT_TICKET_MINT : skip goods needed for Imperial Ticket Mint
+    - NONE        : nothing redeemed (handled by AUTO_REDEMPTION flag)
     """
     inventory = await api.goods_inventory(config.HIVE_USERNAME)
     items = inventory.get("items") or []
-    available = [
-        item.get("id")
-        for item in items
-        if str(item.get("status") or "AVAILABLE").upper() == "AVAILABLE" and item.get("id")
-    ]
+
+    # Mapping quality to star count and level to rarity number
+    QUALITY_STARS = {"STANDARD": 1, "FINE": 2, "SUPERIOR": 3}
+    LEVEL_RARITY = {"ESSENTIAL": 1, "STANDARD": 2, "VALUE": 3, "PREMIUM": 4, "LUXURY": 5}
+    TICKET_INDUSTRIES = {"FOOD", "TEXTILE", "PHARMA", "CHEMICAL", "SUPERMARKET"}
+
+    def _is_ticket_mint_candidate(item: dict) -> bool:
+        """Check if a good is needed for Imperial Ticket Mint."""
+        quality = str(item.get("quality") or "").upper()
+        level = str(item.get("product_level") or "").upper()
+        industry = str(item.get("industry") or "").upper()
+        stars = QUALITY_STARS.get(quality, 0)
+        rarity = LEVEL_RARITY.get(level, 0)
+        # R1 3★ from any of the 5 industries
+        if rarity == 1 and stars >= 3 and industry in TICKET_INDUSTRIES:
+            return True
+        # R2 2★+ from any industry
+        if rarity == 2 and stars >= 2:
+            return True
+        # R3 2★+ from any industry
+        if rarity == 3 and stars >= 2:
+            return True
+        # R4+ 1★+ from any industry
+        if rarity >= 4:
+            return True
+        return False
+
+    if config.AUTO_REDEMPTION_MODE == "ALL":
+        available = [
+            item.get("id")
+            for item in items
+            if str(item.get("status") or "AVAILABLE").upper() == "AVAILABLE" and item.get("id")
+        ]
+    elif config.AUTO_REDEMPTION_MODE == "EXCEPT_TICKET_MINT":
+        available = []
+        skipped = []
+        for item in items:
+            if str(item.get("status") or "AVAILABLE").upper() != "AVAILABLE" or not item.get("id"):
+                continue
+            iid = item.get("id")
+            if _is_ticket_mint_candidate(item):
+                skipped.append(iid)
+            else:
+                available.append(iid)
+    else:  # NONE
+        return "=== Goods Redemption ===\nAuto-redemption disabled."
+
     if not available:
-        return "=== Goods Redemption ===\nNo AVAILABLE goods to redeem."
+        msg = "=== Goods Redemption ===\nNo AVAILABLE goods to redeem."
+        if skipped:
+            msg += f"\nSkipped {len(skipped)} goods reserved for Imperial Ticket Mint."
+        return msg
     result = await api.goods_burn_redemption(
         config.HIVE_USERNAME, available
     )
@@ -787,6 +837,8 @@ async def _auto_redeem_goods() -> str:
         "=== Goods Redemption ===\n"
         f"Bulk-redeemed {len(available)} goods."
     )
+    if skipped:
+        line += f"\nSkipped {len(skipped)} goods reserved for Imperial Ticket Mint."
     if result.get("message"):
         line += f"\n{result['message']}"
     if result.get("empReward") is not None:

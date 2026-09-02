@@ -65,6 +65,16 @@ FULFILLMENT_CLAIM_BUFFER_SECONDS = int(os.getenv("FULFILLMENT_CLAIM_BUFFER_SECON
 # ---- goods auto-redemption ----
 # When enabled (on by default), after goods are claimed the bot bulk-redeems
 # all AVAILABLE goods on the inventory tab via the redemption burn endpoint.
+# MODE controls which goods are submitted:
+#   ALL         — submit every available good (default)
+#   EXCEPT_TICKET_MINT — skip goods needed for Imperial Ticket Mint
+#   NONE        — do not auto-redeem (same as AUTO_REDEMPTION=false)
+AUTO_REDEMPTION_MODE = os.getenv("AUTO_REDEMPTION_MODE", "EXCEPT_TICKET_MINT").strip().upper()
+if AUTO_REDEMPTION_MODE not in ("ALL", "EXCEPT_TICKET_MINT", "NONE"):
+    raise RuntimeError(
+        f"Invalid AUTO_REDEMPTION_MODE: {AUTO_REDEMPTION_MODE}. "
+        "Must be ALL, EXCEPT_TICKET_MINT, or NONE."
+    )
 AUTO_REDEMPTION = _opt_bool("AUTO_REDEMPTION", True)
 
 # ---- daily statistics to Google Sheets ----
