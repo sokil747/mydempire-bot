@@ -43,6 +43,8 @@ from formatters import (
 )
 from maintenance import collect_factories, TIER_ORDER
 from mde_api import MydEmpireClient, MydEmpireAPIError, RateLimitedError
+from daily_log import log_action
+import daily_log
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
@@ -197,6 +199,8 @@ async def _claim_hive_text() -> str:
     if amount <= 0:
         return "No HIVE available to claim right now."
     d = await api.claim_rewards(config.HIVE_USERNAME)
+    claimed = float(d.get("claimable_amount") or 0)
+    log_action("HIVE reward claimed", emp=None, detail=f"{claimed} HIVE")
     return format_reward_claim(d)
 
 
@@ -352,6 +356,11 @@ async def _pay_maintenance(factories: list, threshold: float) -> dict:
         if result:
             if result.get("success"):
                 paid.append((f, result))
+                daily_log.log_action(
+                    f"Maintenance paid #{f['id']} {f.get('factory_name', '?')}",
+                    emp=-float(result.get("emp_spent") or 0),
+                    detail=f"+{_int(result.get('days_added'))}d",
+                )
             else:
                 failed.append((f, result.get("error", "unknown error")))
 
@@ -440,6 +449,11 @@ async def _auto_upgrade_factories(overview: dict, balance: float) -> tuple[list,
         if result and result.get("success"):
             upgraded.append(cand)
             bal -= cand["cost"]
+            log_action(
+                f"Factory upgrade #{cand['factory_id']} {cand.get('tier')}->{cand.get('next_tier')}",
+                emp=-float(cand["cost"]),
+                detail=cand.get("factory_name", ""),
+            )
             await asyncio.sleep(
                 random.uniform(
                     intervals.PAY_MAINT_DELAY_MIN,
@@ -834,6 +848,11 @@ async def _auto_redeem_goods() -> str:
         result = await api.goods_burn_redemption(
             config.HIVE_USERNAME, available
         )
+        log_action(
+            "Goods redeemed",
+            emp=float(result.get("empReward") or 0) if result.get("empReward") is not None else None,
+            detail=f"{len(available)} goods",
+        )
     
     line = (
         "=== Goods Redemption ===\n"
@@ -929,6 +948,8 @@ async def _plan_crate_text() -> str:
     status = await _crate_status()
     if status["can_open"]:
         d = await api.open_imperial_crate(config.HIVE_USERNAME)
+        d = await api.open_imperial_crate(config.HIVE_USERNAME)
+        log_action("Imperial crate opened", emp=float((d.get("reward") or {}).get("reward_amount") or 0))
         return "=== Imperial Supply Crate ===\n" + format_crate_open(d)
     if status["opened_today"] >= config.CRATE_MAX_CLAIMS_PER_DAY:
         reason = f"Already opened today ({config.CRATE_MAX_CLAIMS_PER_DAY} crates per day limit)."
@@ -1038,6 +1059,10 @@ async def _run_ops_automation(quiet: bool = False) -> list[str]:
         if collected:
             lines.append(format_operation_collect(collected))
             await _notify(format_operation_collect(collected))
+            log_action(
+                f"Operation collected {config.OPS_TYPE}",
+                emp=float(collected.get("empReward") or collected.get("reward") or 0),
+            )
         else:
             lines.append("Failed to collect the existing operation (timeout).")
             _ops_task = None
@@ -1051,11 +1076,19 @@ async def _run_ops_automation(quiet: bool = False) -> list[str]:
         await _notify(
             f"Started {config.OPS_TYPE} (budget {config.OPS_BUDGET} EMP)."
         )
+        log_action(
+            f"Operation started {config.OPS_TYPE}",
+            emp=-float(config.OPS_BUDGET),
+        )
 
         collected = await _wait_then_collect()
         if collected:
             lines.append(format_operation_collect(collected))
             await _notify(format_operation_collect(collected))
+            log_action(
+                f"Operation collected {config.OPS_TYPE}",
+                emp=float(collected.get("empReward") or collected.get("reward") or 0),
+            )
         else:
             lines.append("Failed to collect operation (timeout).")
             break
@@ -1156,6 +1189,11 @@ async def _delayed_fulfillment_claim(wait: float) -> None:
                 float(progress.get("percent") or 0) >= 100
             ):
                 claim = await api.factory_fulfillment_claim(config.HIVE_USERNAME)
+                outcome = claim.get("outcome") or claim.get("claimResult") or {}
+                log_action(
+                    "Fulfillment claimed",
+                    emp=float(outcome.get("finalEmpReward") or 0),
+                )
                 await _notify(
                     "Fulfillment claimed:\n" + format_fulfillment_claim(claim)
                 )
@@ -1283,6 +1321,11 @@ async def _plan_fulfillment_text() -> str:
     if complete:
         # Claim now (100% reached), then start a new fulfillment if possible.
         claim = await api.factory_fulfillment_claim(config.HIVE_USERNAME)
+        outcome = claim.get("outcome") or claim.get("claimResult") or {}
+        log_action(
+            "Fulfillment claimed",
+            emp=float(outcome.get("finalEmpReward") or 0),
+        )
         await _notify(
             "Fulfillment claimed:\n" + format_fulfillment_claim(claim)
         )
@@ -1396,6 +1439,13 @@ async def _plan_wheel_text() -> str:
             or "unknown"
         )
         lines.append(f"Spin {spun}: {label}")
+        emp_val = (
+            float(reward.get("reward_amount"))
+            if str(reward.get("reward_type") or "").upper() == "EMP"
+            and reward.get("reward_amount") is not None
+            else None
+        )
+        log_action("Wheel spin", emp=emp_val, detail=str(label))
         if not result.get("success"):
             break
         await asyncio.sleep(2)
@@ -1421,6 +1471,11 @@ async def _plan_warehouse_clean() -> str:
     cost = d.get("ratCleanupCost")
     cost_txt = f" (cost {_num(cost)} EMP)" if cost else ""
     result = await api.rat_cleanup(config.HIVE_USERNAME)
+    log_action(
+        "Warehouse cleanup",
+        emp=-float(result.get("empSpent") or 0) if result.get("empSpent") is not None else None,
+        detail=f"smp +{result.get('smpReward')}",
+    )
     cleanup = format_rat_cleanup(result).splitlines()
     body = "\n".join(cleanup[1:]) if len(cleanup) > 1 else ""
     text = (
@@ -1566,7 +1621,8 @@ async def _run_stats_to_sheet() -> str:
 
 
 async def _daily_scheduler_loop() -> None:
-    """Run the daily tasks at the configured time each day (default 02:00)."""
+    """Run the daily tasks at the configured time each day (default 02:00),
+    then send the compiled activity report at config.DAILY_LOG_TIME (23:58)."""
     while True:
         now = datetime.now()
         try:
@@ -1577,19 +1633,47 @@ async def _daily_scheduler_loop() -> None:
         if target <= now:
             target += timedelta(days=1)
         await asyncio.sleep((target - now).total_seconds())
+        # Run daily actions (report itself is sent at 23:58 from the log)
         try:
-            text = await _run_daily_tasks_text()
-            await _send_daily_report(text)
+            d = await api.dashboard(config.HIVE_USERNAME)
+            daily_log.save_asset_snapshot(d)
+            await _run_daily_tasks_text()
         except Exception as exc:  # noqa: BLE001
             logger.exception("daily tasks run failed")
+            daily_log.log_action("Daily tasks failed", detail=str(exc))
             await _notify(f"Daily tasks failed: {exc}")
         try:
-            text = await _run_stats_to_sheet()
-            if text:
-                await _notify(text)
+            await _run_stats_to_sheet()
         except Exception as exc:  # noqa: BLE001
             logger.exception("stats to sheet failed")
             await _notify(f"Stats to sheet failed: {exc}")
+
+        # Sleep until the evening report time (default 23:58)
+        try:
+            eh, em = (int(x) for x in config.DAILY_LOG_TIME.split(":"))
+        except (ValueError, AttributeError):
+            eh, em = 23, 58
+        while True:
+            now = datetime.now()
+            report_target = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+            if report_target <= now:
+                report_target += timedelta(days=1)
+            await asyncio.sleep((report_target - now).total_seconds())
+            # build leaderboard text safely
+            lb = None
+            try:
+                lb = await _leaderboard_positions_text()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("leaderboard for evening report failed: %s", exc)
+            try:
+                report = await daily_log.build_daily_report(
+                    api, config.HIVE_USERNAME, lb
+                )
+                await _send_daily_report(report)
+                daily_log.archive_day()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("evening report failed")
+                await _notify(f"Evening report failed: {exc}")
 
 
 @dp.message(Command("daily"))

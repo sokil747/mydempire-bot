@@ -95,3 +95,8 @@ STATS_SERVICE_ACCOUNT_FILE = os.getenv("STATS_SERVICE_ACCOUNT_FILE", "").strip()
 # Maximum number of Imperial Supply Crates that can be opened per day.
 # Default: 4 (set to 1 for original "1 free crate per day" behavior).
 CRATE_MAX_CLAIMS_PER_DAY = int(os.getenv("CRATE_MAX_CLAIMS_PER_DAY", "4"))
+
+# ---- evening activity report ----
+# Time (HH:MM, VPS local time) when the compiled daily activity report
+# (actions log + EMP ledger + asset changes + leaderboards) is sent.
+DAILY_LOG_TIME = os.getenv("DAILY_LOG_TIME", "23:58")
