@@ -1620,9 +1620,8 @@ async def _run_stats_to_sheet() -> str:
     )
 
 
-async def _daily_scheduler_loop() -> None:
-    """Run the daily tasks at the configured time each day (default 02:00),
-    then send the compiled activity report at config.DAILY_LOG_TIME (23:58)."""
+async def _daily_tasks_loop() -> None:
+    """Run the daily actions every day at config.GOODS_CLAIM_CRON_TIME (02:00)."""
     while True:
         now = datetime.now()
         try:
@@ -1633,7 +1632,6 @@ async def _daily_scheduler_loop() -> None:
         if target <= now:
             target += timedelta(days=1)
         await asyncio.sleep((target - now).total_seconds())
-        # Run daily actions (report itself is sent at 23:58 from the log)
         try:
             d = await api.dashboard(config.HIVE_USERNAME)
             daily_log.save_asset_snapshot(d)
@@ -1643,37 +1641,40 @@ async def _daily_scheduler_loop() -> None:
             daily_log.log_action("Daily tasks failed", detail=str(exc))
             await _notify(f"Daily tasks failed: {exc}")
         try:
-            await _run_stats_to_sheet()
+            text = await _run_stats_to_sheet()
+            if text:
+                await _notify(text)
         except Exception as exc:  # noqa: BLE001
             logger.exception("stats to sheet failed")
             await _notify(f"Stats to sheet failed: {exc}")
 
-        # Sleep until the evening report time (default 23:58)
+
+async def _evening_report_loop() -> None:
+    """Build and send the daily activity report at config.DAILY_LOG_TIME (23:58)."""
+    while True:
         try:
             eh, em = (int(x) for x in config.DAILY_LOG_TIME.split(":"))
         except (ValueError, AttributeError):
             eh, em = 23, 58
-        while True:
-            now = datetime.now()
-            report_target = now.replace(hour=eh, minute=em, second=0, microsecond=0)
-            if report_target <= now:
-                report_target += timedelta(days=1)
-            await asyncio.sleep((report_target - now).total_seconds())
-            # build leaderboard text safely
-            lb = None
-            try:
-                lb = await _leaderboard_positions_text()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("leaderboard for evening report failed: %s", exc)
-            try:
-                report = await daily_log.build_daily_report(
-                    api, config.HIVE_USERNAME, lb
-                )
-                await _send_daily_report(report)
-                daily_log.archive_day()
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("evening report failed")
-                await _notify(f"Evening report failed: {exc}")
+        now = datetime.now()
+        report_target = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+        if report_target <= now:
+            report_target += timedelta(days=1)
+        await asyncio.sleep((report_target - now).total_seconds())
+        lb = None
+        try:
+            lb = await _leaderboard_positions_text()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("leaderboard for evening report failed: %s", exc)
+        try:
+            report = await daily_log.build_daily_report(
+                api, config.HIVE_USERNAME, lb
+            )
+            await _send_daily_report(report)
+            daily_log.archive_day()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("evening report failed")
+            await _notify(f"Evening report failed: {exc}")
 
 
 @dp.message(Command("daily"))
@@ -1857,13 +1858,15 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     try:
-        scheduler = asyncio.create_task(_daily_scheduler_loop())
+        scheduler = asyncio.create_task(_daily_tasks_loop())
+        evening = asyncio.create_task(_evening_report_loop())
         goods_sched = asyncio.create_task(_scheduler_loop())
         await dp.start_polling(
             _bot, timeout=intervals.TG_POLLING_TIMEOUT_SECONDS
         )
     finally:
         scheduler.cancel()
+        evening.cancel()
         goods_sched.cancel()
         await api.close()
         await _bot.session.close()
