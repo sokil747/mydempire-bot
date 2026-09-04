@@ -1691,6 +1691,28 @@ async def cmd_daily(message: Message) -> None:
     await _safe_reply(message, text)
 
 
+@dp.message(Command("report"))
+async def cmd_report(message: Message) -> None:
+    """Build and send the daily activity report on demand."""
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        lb = None
+        try:
+            lb = await _leaderboard_positions_text()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("leaderboard for report failed: %s", exc)
+        report = await daily_log.build_daily_report(
+            api, config.HIVE_USERNAME, lb
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("report failed")
+        await _reply(message, f"Failed to build report: {exc}")
+        return
+    await _safe_reply(message, report)
+
+
 _GOODS_STATE_KEY = "goods_claim"
 
 
