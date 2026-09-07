@@ -426,6 +426,51 @@ class MydEmpireClient:
     async def active_season(self) -> dict:
         return await self.get_json("/season/active")
 
+    async def daily_empire_report(self, username: str) -> dict:
+        return await self.get_json(
+            f"/player/{username}/daily-empire-report",
+            headers={"x-mde-actor": username},
+        )
+
+    async def daily_empire_report_claim(
+        self, username: str, report_date: str, hive_author: str, hive_permlink: str
+    ) -> dict:
+        return await self._request(
+            "POST",
+            f"/player/{username}/daily-empire-report/claim",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+            json={
+                "reportDate": report_date,
+                "hiveAuthor": hive_author,
+                "hivePermlink": hive_permlink,
+            },
+        )
+
+    async def imperial_mint_claim(self, username: str, special_industry_id: int) -> dict:
+        return await self._request(
+            "POST",
+            f"/player/{username}/imperial-mint/claim",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+            json={"special_industry_id": special_industry_id},
+        )
+
+    async def imperial_mint_maintenance(self, username: str, special_industry_id: int) -> dict:
+        return await self._request(
+            "POST",
+            f"/player/{username}/imperial-mint/maintenance",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+            json={"special_industry_id": special_industry_id},
+        )
+
     async def close(self) -> None:
         if self._session is not None and not self._session.closed:
             await self._session.close()

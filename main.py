@@ -137,6 +137,9 @@ async def cmd_start(message: Message) -> None:
         "/ops_status - current ops automation status\n"
         "/fulfillment - check factory fulfillment progress & plan claim\n"
         "/stats - gather statistics and write today's row to Google Sheets\n"
+        "/mint - claim Imperial Mint EMP and pay its maintenance\n"
+        "/publish - publish Daily Empire Report on Hive + claim reward\n"
+        "/report - show today's activity report\n"
         "/help - this message",
     )
 
@@ -1485,6 +1488,108 @@ async def _plan_warehouse_clean() -> str:
     return text
 
 
+async def _mint_text() -> str:
+    """Claim stored EMP from Imperial Mint lands and pay maintenance when due.
+
+    Imperial Mint factories live in `land.special_industries` with
+    industry_type IMPERIAL_MINT. Claims stored_emp; when maintenance has
+    expired, pays 10 EMP to activate for another 7 days.
+    """
+    from datetime import timezone as _tz
+
+    o = await api.empire_overview(config.HIVE_USERNAME)
+    lines = ["=== Imperial Mint ==="]
+    acted = False
+    for land in o.get("lands") or []:
+        for si in land.get("special_industries") or []:
+            if str(si.get("industry_type") or "").upper() != "IMPERIAL_MINT":
+                continue
+            sid = si.get("id")
+            stored = float(si.get("stored_emp") or 0)
+            ends = _parse_iso(si.get("maintenance_ends_at"))
+            now = datetime.now(_tz.utc)
+            expired = ends is None or now >= ends
+            if stored > 0:
+                try:
+                    r = await api.imperial_mint_claim(config.HIVE_USERNAME, sid)
+                    emp_claimed = float(r.get("emp_claimed") or stored)
+                    lines.append(
+                        f"Claimed {_num(emp_claimed)} EMP from mint #{sid} "
+                        f"(land {land.get('land_id')})"
+                    )
+                    log_action("Imperial Mint EMP claimed", emp=emp_claimed)
+                    acted = True
+                except Exception as exc:  # noqa: BLE001
+                    lines.append(f"Mint claim #{sid} failed: {exc}")
+            if expired:
+                d = await api.dashboard(config.HIVE_USERNAME)
+                bal = float(d.get("empBalance") or 0)
+                if bal < 10:
+                    lines.append(
+                        f"Maintenance due on mint #{sid} but balance too low "
+                        f"({_num(bal)} EMP, need 10)."
+                    )
+                else:
+                    try:
+                        await api.imperial_mint_maintenance(
+                            config.HIVE_USERNAME, sid
+                        )
+                        lines.append(
+                            f"Maintenance paid for mint #{sid} (10 EMP, +7d)"
+                        )
+                        log_action(
+                            "Imperial Mint maintenance", emp=-10.0,
+                            detail=f"mint #{sid}",
+                        )
+                        acted = True
+                    except Exception as exc:  # noqa: BLE001
+                        lines.append(f"Mint maintenance #{sid} failed: {exc}")
+            else:
+                days_left = (
+                    (ends - now).total_seconds() / 86400 if ends else None
+                )
+                if not stored:
+                    lines.append(
+                        f"Mint #{sid}: no stored EMP, maintenance ok "
+                        f"({days_left:.1f}d left)" if days_left is not None else
+                        f"Mint #{sid}: no stored EMP"
+                    )
+    if not acted and len(lines) == 1:
+        lines.append("Nothing to claim or pay.")
+    return "\n".join(lines)
+
+
+@dp.message(Command("mint"))
+async def cmd_mint(message: Message) -> None:
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        text = await _mint_text()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("mint failed")
+        await _reply(message, f"Failed to run imperial mint tasks: {exc}")
+        return
+    await _safe_reply(message, text)
+
+
+@dp.message(Command("publish"))
+async def cmd_publish(message: Message) -> None:
+    """Publish the Daily Empire Report on Hive and claim the reward."""
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        from hive_publish import publish_daily_report
+
+        text = await publish_daily_report(api, config.HIVE_USERNAME)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("publish failed")
+        await _reply(message, f"Failed to publish report: {exc}")
+        return
+    await _safe_reply(message, text)
+
+
 async def _run_daily_tasks_text():
     """Run the daily routine: claim HIVE, check lands, goods, crate, ops."""
     parts = []
@@ -1524,6 +1629,16 @@ async def _run_daily_tasks_text():
         parts.append(await _leaderboard_positions_text())
     except Exception as exc:  # noqa: BLE001
         parts.append(f"Leaderboard check failed: {exc}")
+    try:
+        parts.append(await _mint_text())
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"Imperial Mint failed: {exc}")
+    try:
+        from hive_publish import publish_daily_report
+
+        parts.append(await publish_daily_report(api, config.HIVE_USERNAME))
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"Hive publish failed: {exc}")
     return "\n\n".join(parts)
 
 
