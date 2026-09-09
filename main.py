@@ -1755,6 +1755,13 @@ async def _daily_tasks_loop() -> None:
             logger.exception("daily tasks run failed")
             daily_log.log_action("Daily tasks failed", detail=str(exc))
             await _notify(f"Daily tasks failed: {exc}")
+        # Safety net: if the scheduler missed a due goods claim, catch up now.
+        try:
+            planned = scheduler.get_planned(_GOODS_STATE_KEY)
+            if planned is not None and planned <= datetime.now().astimezone():
+                await _run_goods_claim()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("goods claim safety net failed: %s", exc)
         try:
             text = await _run_stats_to_sheet()
             if text:
@@ -1973,10 +1980,16 @@ async def _scheduler_loop() -> None:
 
     Runs cheaply (local file read + rare preview). The actual goods claim is
     triggered at the persisted planned time by an asyncio task, so no constant
-    API polling is required.
+    API polling is required. The loop itself never dies: every iteration is
+    wrapped so one failure only skips that step.
     """
     while True:
-        now = datetime.now().astimezone()
+        try:
+            now = datetime.now().astimezone()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("scheduler clock failed: %s", exc)
+            await asyncio.sleep(intervals.GOODS_SCHEDULER_REFRESH_SECONDS)
+            continue
         try:
             await _schedule_from_state(now)
         except Exception as exc:  # noqa: BLE001
