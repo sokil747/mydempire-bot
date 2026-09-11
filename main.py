@@ -919,12 +919,13 @@ async def _crate_status() -> dict:
         cooldown_elapsed = now >= cooldown_until
 
     # Check 15 EMP balance before allowing a claim
+    emp_balance = 0.0
     try:
         d = await api.dashboard(config.HIVE_USERNAME)
         emp_balance = float(d.get("empBalance") or 0)
-        has_enough_emp = emp_balance >= 15
     except Exception:  # noqa: BLE001
-        has_enough_emp = False
+        pass
+    has_enough_emp = emp_balance >= 15
 
     # Determine if we can open a crate
     can_open = can_open_more and cooldown_elapsed and has_enough_emp
@@ -943,33 +944,92 @@ async def _crate_status() -> dict:
         "eligible": float(d.get("globalSharePercent") or 0) >= 1.5,
         "last_opened": last_opened,
         "cooldown_remaining": cooldown_remaining,
+        "emp_balance": emp_balance,
     }
 
 
+async def _open_crates_up_to_daily_max() -> list[str]:
+    """Open crates while the daily limit and cooldown allow.
+
+    If the balance is short of the 15 EMP crate fee but an empire operation is
+    running that will finish soon, waits for its completion (reward brings
+    EMP back) and retries instead of giving up.
+    """
+    lines = []
+    while True:
+        status = await _crate_status()
+        if not status["can_open"]:
+            if status["opened_today"] >= config.CRATE_MAX_CLAIMS_PER_DAY:
+                lines.append(
+                    f"Daily limit reached ({config.CRATE_MAX_CLAIMS_PER_DAY} crates)."
+                )
+            elif status["cooldown_remaining"]:
+                lines.append(f"On cooldown: {status['cooldown_remaining']}")
+            elif not status["eligible"]:
+                lines.append("Not eligible (need globalShare >= 1.5%).")
+            elif status["emp_balance"] < 15:
+                # Short on EMP: if an operation is about to finish, wait for its
+                # reward instead of skipping today's crates.
+                try:
+                    ops = await api.empire_operations(config.HIVE_USERNAME)
+                    active = ops.get("activeOperation")
+                except Exception:  # noqa: BLE001
+                    active = None
+                ends = _parse_iso((active or {}).get("ends_at"))
+                if ends:
+                    wait = max(
+                        0.0,
+                        (ends - datetime.now(tz=datetime.utcnow().astimezone().tzinfo)).total_seconds(),
+                    )
+                    if wait <= 6 * 3600:
+                        lines.append(
+                            f"Balance {_num(status['emp_balance'])} EMP < 15. "
+                            f"Waiting {wait / 60:.0f}m for operation reward..."
+                        )
+                        try:
+                            collected = await _wait_then_collect()
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("crate op-wait collect failed: %s", exc)
+                            collected = None
+                        if collected:
+                            lines.append(format_operation_collect(collected))
+                            await _notify(format_operation_collect(collected))
+                            continue
+                lines.append(
+                    f"Balance {_num(status['emp_balance'])} EMP < 15 — skipping crate."
+                )
+            else:
+                lines.append("Not available.")
+            break
+        try:
+            d = await api.open_imperial_crate(config.HIVE_USERNAME)
+        except RateLimitedError:
+            lines.append("Crate rate limited, stopping.")
+            break
+        except Exception as exc:  # noqa: BLE001
+            lines.append(f"Crate open failed: {exc}")
+            break
+        reward = (d.get("reward") or {})
+        emp = reward.get("reward_amount")
+        label = (
+            reward.get("reward_label")
+            or f"{reward.get('reward_type')} x{reward.get('reward_amount')}"
+            or "unknown"
+        )
+        lines.append(f"Opened crate: {label}")
+        log_action(
+            "Imperial crate opened",
+            emp=float(emp) if emp is not None else None,
+            detail=str(label),
+        )
+        await asyncio.sleep(3)
+    return lines
+
+
 async def _plan_crate_text() -> str:
-    """Open the free daily crate if available, else report the plan."""
-    status = await _crate_status()
-    if status["can_open"]:
-        d = await api.open_imperial_crate(config.HIVE_USERNAME)
-        d = await api.open_imperial_crate(config.HIVE_USERNAME)
-        log_action("Imperial crate opened", emp=float((d.get("reward") or {}).get("reward_amount") or 0))
-        return "=== Imperial Supply Crate ===\n" + format_crate_open(d)
-    if status["opened_today"] >= config.CRATE_MAX_CLAIMS_PER_DAY:
-        reason = f"Already opened today ({config.CRATE_MAX_CLAIMS_PER_DAY} crates per day limit)."
-    elif not status["eligible"]:
-        reason = "Not eligible for free crate (need globalShare >= 1.5%)."
-    elif status["cooldown_remaining"]:
-        reason = f"On cooldown: {status['cooldown_remaining']}"
-    else:
-        reason = "Not available."
-    return format_crate_plan(
-        {
-            "can_open": False,
-            "opened_today": status["opened_today"],
-            "cooldown_remaining": status["cooldown_remaining"] or "n/a",
-            "status": reason,
-        }
-    )
+    """Open crates up to the daily max, waiting for op rewards when short on EMP."""
+    lines = await _open_crates_up_to_daily_max()
+    return "=== Imperial Supply Crate ===\n" + "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
