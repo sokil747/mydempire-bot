@@ -1224,14 +1224,26 @@ async def _estimate_fulfillment_completion(active: dict, progress: dict) -> date
 
 
 def _pick_fulfillment_industry(d: dict) -> str | None:
-    """Pick the first available producing industry for a new fulfillment."""
+    """Pick the fastest-completing industry for a new fulfillment.
+
+    The fulfillment target scales with global EP, so the same target completes
+    in proportion to the industry's EP/day — picking the strongest producing
+    industry finishes ~2x faster than the weakest, for the same reward.
+    Restricted to industries still eligible in the rotation when the rotation
+    has remaining industries.
+    """
     rotation = d.get("rotationStatus") or {}
     remaining = rotation.get("remainingIndustries") or []
     producing = d.get("producingIndustries") or []
+    industry_ep = d.get("industryEP") or {}
+
+    def _ep(name: str) -> float:
+        return float(industry_ep.get(name) or 0)
+
     if remaining:
-        return remaining[0]
+        return max(remaining, key=_ep)
     if producing:
-        return producing[0]
+        return max(producing, key=_ep)
     return None
 
 
