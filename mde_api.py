@@ -153,6 +153,32 @@ class MydEmpireClient:
                 raise MydEmpireAPIError(f"Auth failed: {exc}") from exc
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
+        """Send a request with retry on timeout/connection errors.
+
+        The Render-hosted backend occasionally hangs; blank TimeoutError
+        failures broke whole daily runs, so now each call is retried with
+        backoff before giving up.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(intervals.API_RETRIES):
+            try:
+                return await self._request_once(method, path, **kwargs)
+            except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+                last_exc = exc
+                kind = type(exc).__name__
+                logger.warning(
+                    "%s on %s %s (attempt %d/%d): %s",
+                    kind, method, path, attempt + 1,
+                    intervals.API_RETRIES, exc or kind,
+                )
+                if attempt < intervals.API_RETRIES - 1:
+                    await asyncio.sleep(intervals.API_RETRY_BACKOFF_SECONDS * (attempt + 1))
+        raise MydEmpireAPIError(
+            f"{type(last_exc).__name__} on {method} {path} "
+            f"after {intervals.API_RETRIES} attempts"
+        ) from last_exc
+
+    async def _request_once(self, method: str, path: str, **kwargs) -> dict:
         # skip auth for auth endpoints themselves
         is_auth_path = path.startswith("/auth/")
         # ensure we have a token for non-auth paths if possible, but don't fail if no posting key

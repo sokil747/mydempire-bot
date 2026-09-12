@@ -1826,7 +1826,7 @@ async def _daily_tasks_loop() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.exception("daily tasks run failed")
             daily_log.log_action("Daily tasks failed", detail=str(exc))
-            await _notify(f"Daily tasks failed: {exc}")
+            await _notify(f"Daily tasks failed: {exc or type(exc).__name__}")
         # Safety net: if the scheduler missed a due goods claim, catch up now.
         try:
             planned = scheduler.get_planned(_GOODS_STATE_KEY)
@@ -1840,7 +1840,7 @@ async def _daily_tasks_loop() -> None:
                 await _notify(text)
         except Exception as exc:  # noqa: BLE001
             logger.exception("stats to sheet failed")
-            await _notify(f"Stats to sheet failed: {exc}")
+            await _notify(f"Stats to sheet failed: {exc or type(exc).__name__}")
 
 
 async def _evening_report_loop() -> None:
