@@ -5,12 +5,17 @@ Tune these values without touching the bot code.
 
 # ---- API client ----
 # Request timeout for each HTTP call.
-API_TIMEOUT_SECONDS = 45
+API_TIMEOUT_SECONDS = 30
 
 # Retries (and backoff seconds between them) when a request times out or the
 # connection fails — the backend (Render free tier) occasionally hangs.
-API_RETRIES = 3
-API_RETRY_BACKOFF_SECONDS = 10
+API_RETRIES = 2
+API_RETRY_BACKOFF_SECONDS = 8
+
+# Circuit breaker: after this many consecutive failures, skip new requests
+# for this many seconds so commands respond fast while the backend is down.
+API_BREAKER_THRESHOLD = 3
+API_BREAKER_COOLDOWN_SECONDS = 180
 
 # ---- maintenance payments ----
 # Random delay range (seconds) between each maintenance payment request.

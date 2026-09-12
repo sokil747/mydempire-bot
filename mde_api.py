@@ -34,6 +34,8 @@ class MydEmpireClient:
         self._token_expires_at: datetime | None = None
         self._auth_lock = asyncio.Lock()
         self._auth_retry_after: datetime | None = None
+        self._consecutive_failures = 0
+        self._breaker_open_until: datetime | None = None
         self._load_token()
 
     def _load_token(self) -> None:
@@ -155,14 +157,27 @@ class MydEmpireClient:
     async def _request(self, method: str, path: str, **kwargs) -> dict:
         """Send a request with retry on timeout/connection errors.
 
-        The Render-hosted backend occasionally hangs; blank TimeoutError
-        failures broke whole daily runs, so now each call is retried with
-        backoff before giving up.
+        Includes a circuit breaker: after several consecutive network
+        failures, new requests fail fast for a cooldown window so Telegram
+        commands stay responsive while the backend is down.
         """
+        now = datetime.now(timezone.utc)
+        if (
+            self._breaker_open_until is not None
+            and now < self._breaker_open_until
+        ):
+            raise MydEmpireAPIError(
+                "Backend unreachable — retry in a few minutes "
+                f"(circuit breaker open until {self._breaker_open_until.strftime('%H:%M:%S')} UTC)."
+            )
+
         last_exc: Exception | None = None
         for attempt in range(intervals.API_RETRIES):
             try:
-                return await self._request_once(method, path, **kwargs)
+                result = await self._request_once(method, path, **kwargs)
+                self._consecutive_failures = 0
+                self._breaker_open_until = None
+                return result
             except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
                 last_exc = exc
                 kind = type(exc).__name__
@@ -173,9 +188,18 @@ class MydEmpireClient:
                 )
                 if attempt < intervals.API_RETRIES - 1:
                     await asyncio.sleep(intervals.API_RETRY_BACKOFF_SECONDS * (attempt + 1))
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= intervals.API_BREAKER_THRESHOLD:
+            self._breaker_open_until = now + timedelta(
+                seconds=intervals.API_BREAKER_COOLDOWN_SECONDS
+            )
+            logger.warning(
+                "circuit breaker OPEN until %s after %s consecutive failures",
+                self._breaker_open_until.isoformat(), self._consecutive_failures,
+            )
         raise MydEmpireAPIError(
             f"{type(last_exc).__name__} on {method} {path} "
-            f"after {intervals.API_RETRIES} attempts"
+            f"after {intervals.API_RETRIES} attempts (backend unreachable)"
         ) from last_exc
 
     async def _request_once(self, method: str, path: str, **kwargs) -> dict:
