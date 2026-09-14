@@ -91,3 +91,6 @@ OPS_COLLECT_RETRY_SECONDS = 30
 
 # How often the scheduler loop verifies ops automation is running (seconds).
 OPS_AUTO_CHECK_INTERVAL_SECONDS = 30 * 60
+
+# How often the scheduler loop does a goods-claim safety check (seconds).
+GOODS_AUTO_CHECK_INTERVAL_SECONDS = 15 * 60

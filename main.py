@@ -1061,6 +1061,30 @@ async def _check_crate_auto() -> None:
         await _notify("Auto-crate:\n" + "\n".join(lines))
 
 
+async def _check_goods_auto() -> None:
+    """Claim goods as soon as they are ready (throttled safety net).
+
+    The planned-time scheduler should normally fire the claim; this check
+    guarantees goods are claimed even if the planned time is stale or the
+    bookkeeping breaks — one preview call per check interval.
+    """
+    last = scheduler.get_planned("goods_last_check")
+    now = datetime.now().astimezone()
+    if last is not None and (now - last).total_seconds() < intervals.GOODS_AUTO_CHECK_INTERVAL_SECONDS:
+        return
+    scheduler.set_planned("goods_last_check", now)
+    if _delayed_claim_task is not None and not _delayed_claim_task.done():
+        return
+    try:
+        p = await api.goods_preview(config.HIVE_USERNAME)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("goods auto-check preview failed: %s", exc)
+        return
+    if not p.get("playerClaimReady"):
+        return
+    await _run_goods_claim()
+
+
 # ---------------------------------------------------------------------------
 # Empire operations automation: run up to OPS_PER_DAY operations, starting each
 # after a random 4-7h gap, collecting each when ready.
@@ -2130,6 +2154,10 @@ async def _scheduler_loop() -> None:
             await _check_ops_auto()
         except Exception as exc:  # noqa: BLE001
             logger.warning("ops auto check failed: %s", exc)
+        try:
+            await _check_goods_auto()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("goods auto check failed: %s", exc)
         await asyncio.sleep(intervals.GOODS_SCHEDULER_REFRESH_SECONDS)
 
 
