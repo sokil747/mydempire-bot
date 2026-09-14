@@ -1016,16 +1016,20 @@ async def _open_crates_up_to_daily_max() -> list[str]:
             or reward.get("reward_amount")
             or reward.get("emp_change")
         )
-        label = (
-            d.get("reward_value")
-            or reward.get("reward_label")
-            or d.get("reward_value")
-            or f"{d.get('reward_type') or reward.get('reward_type') or 'reward'}"
-        )
-        lines.append(f"Opened crate: {label}")
+        rtype = d.get("reward_type") or reward.get("reward_type") or "reward"
+        rvalue = d.get("reward_value") or reward.get("reward_value") or ""
+        label = rvalue or f"{rtype} x{emp}" if emp is not None else str(rtype)
+        try:
+            emp_f = float(emp) if emp is not None else None
+        except (TypeError, ValueError):
+            emp_f = None
+        if emp_f is not None:
+            lines.append(f"Opened crate: reward {_num(emp_f)} EMP ({label})")
+        else:
+            lines.append(f"Opened crate: {label}")
         log_action(
             "Imperial crate opened",
-            emp=float(emp) if emp is not None else None,
+            emp=emp_f,
             detail=str(label),
         )
         await asyncio.sleep(3)
