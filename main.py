@@ -1009,12 +1009,18 @@ async def _open_crates_up_to_daily_max() -> list[str]:
         except Exception as exc:  # noqa: BLE001
             lines.append(f"Crate open failed: {exc}")
             break
-        reward = (d.get("reward") or {})
-        emp = reward.get("reward_amount")
+        reward = d.get("reward") or {}
+        emp = (
+            d.get("emp_change")
+            or d.get("reward_change")
+            or reward.get("reward_amount")
+            or reward.get("emp_change")
+        )
         label = (
-            reward.get("reward_label")
-            or f"{reward.get('reward_type')} x{reward.get('reward_amount')}"
-            or "unknown"
+            d.get("reward_value")
+            or reward.get("reward_label")
+            or d.get("reward_value")
+            or f"{d.get('reward_type') or reward.get('reward_type') or 'reward'}"
         )
         lines.append(f"Opened crate: {label}")
         log_action(
@@ -1030,6 +1036,25 @@ async def _plan_crate_text() -> str:
     """Open crates up to the daily max, waiting for op rewards when short on EMP."""
     lines = await _open_crates_up_to_daily_max()
     return "=== Imperial Supply Crate ===\n" + "\n".join(lines)
+
+
+async def _check_crate_auto() -> None:
+    """Open crates whenever one becomes available (throttled via state.json).
+
+    Runs from the 5-minute scheduler loop so crates 2-4 (3h cooldown each)
+    are opened during the day instead of only at the 02:00 run.
+    """
+    last = scheduler.get_planned("crate_last_check")
+    now = datetime.now().astimezone()
+    if last is not None and (now - last).total_seconds() < intervals.CRATE_CHECK_INTERVAL_SECONDS:
+        return
+    scheduler.set_planned("crate_last_check", now)
+    status = await _crate_status()
+    if not status["can_open"]:
+        return
+    lines = await _open_crates_up_to_daily_max()
+    if lines:
+        await _notify("Auto-crate:\n" + "\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -2070,6 +2095,10 @@ async def _scheduler_loop() -> None:
             await _check_wheel_auto()
         except Exception as exc:  # noqa: BLE001
             logger.warning("wheel auto check failed: %s", exc)
+        try:
+            await _check_crate_auto()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("crate auto check failed: %s", exc)
         await asyncio.sleep(intervals.GOODS_SCHEDULER_REFRESH_SECONDS)
 
 

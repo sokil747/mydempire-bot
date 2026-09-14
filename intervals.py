@@ -70,6 +70,10 @@ CRATE_COOLDOWN_SECONDS = 3 * 60 * 60
 # Maximum crates that can be opened per day.
 CRATE_MAX_PER_DAY = 4
 
+# How often the scheduler loop checks for an available crate (seconds).
+# Crates unlock one every 3h; 5-min checks keep them opened promptly.
+CRATE_CHECK_INTERVAL_SECONDS = 5 * 60
+
 # ---- factory fulfillment restart ----
 # Delay (seconds) between claiming a completed fulfillment and starting a
 # new one.
