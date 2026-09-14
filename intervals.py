@@ -88,3 +88,6 @@ OPS_COLLECT_ATTEMPTS = 5
 
 # Backoff between collect retries (seconds).
 OPS_COLLECT_RETRY_SECONDS = 30
+
+# How often the scheduler loop verifies ops automation is running (seconds).
+OPS_AUTO_CHECK_INTERVAL_SECONDS = 30 * 60

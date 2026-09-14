@@ -1214,6 +1214,29 @@ async def _kickoff_ops_automation() -> str:
     )
 
 
+async def _check_ops_auto() -> None:
+    """Re-kick ops automation if it stalled (e.g. after a bot restart).
+
+    The ops cycle lives in one long asyncio task; a restart kills it and ops
+    would silently stop until the next 02:00 run. Called from the 5-minute
+    scheduler loop, throttled via state.json.
+    """
+    last = scheduler.get_planned("ops_last_check")
+    now = datetime.now().astimezone()
+    if last is not None and (now - last).total_seconds() < intervals.OPS_AUTO_CHECK_INTERVAL_SECONDS:
+        return
+    scheduler.set_planned("ops_last_check", now)
+    if _ops_task is not None and not _ops_task.done():
+        return
+    started = await _count_ops_started_today()
+    remaining = config.OPS_PER_DAY - started
+    if remaining <= 0:
+        return
+    result = await _kickoff_ops_automation()
+    logger.info("ops auto re-kick: %s", result)
+    await _notify("Ops auto-restarted:\n" + result)
+
+
 # ---------------------------------------------------------------------------
 # Factory fulfillment automation: check progress, estimate completion, claim
 # when 100% (+ buffer), then start a new fulfillment.
@@ -2103,6 +2126,10 @@ async def _scheduler_loop() -> None:
             await _check_crate_auto()
         except Exception as exc:  # noqa: BLE001
             logger.warning("crate auto check failed: %s", exc)
+        try:
+            await _check_ops_auto()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ops auto check failed: %s", exc)
         await asyncio.sleep(intervals.GOODS_SCHEDULER_REFRESH_SECONDS)
 
 
