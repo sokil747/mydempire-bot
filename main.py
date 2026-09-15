@@ -1006,6 +1006,19 @@ async def _open_crates_up_to_daily_max() -> list[str]:
         except RateLimitedError:
             lines.append("Crate rate limited, stopping.")
             break
+        except MydEmpireAPIError as exc:
+            msg = str(exc)
+            if "opened all 4" in msg or "available after" in msg:
+                # backend is authoritative: daily limit or cooldown hit
+                lines.append("Crate limit/cooldown reached (backend).")
+                scheduler.set_planned(
+                    "crate_last_check",
+                    datetime.now().astimezone()
+                    + timedelta(minutes=55),
+                )
+            else:
+                lines.append(f"Crate open failed: {msg[:200]}")
+            break
         except Exception as exc:  # noqa: BLE001
             lines.append(f"Crate open failed: {exc}")
             break
@@ -1057,7 +1070,7 @@ async def _check_crate_auto() -> None:
     if not status["can_open"]:
         return
     lines = await _open_crates_up_to_daily_max()
-    if lines:
+    if any(l.startswith("Opened crate:") for l in lines):
         await _notify("Auto-crate:\n" + "\n".join(lines))
 
 
@@ -1101,14 +1114,27 @@ def _is_today(ts: str, tz=None) -> bool:
     return ref.date() == datetime.now().date()
 
 
+def _is_within_24h(ts: str) -> bool:
+    dt = _parse_iso(ts)
+    if not dt:
+        return False
+    now = datetime.now(tz=datetime.utcnow().astimezone().tzinfo)
+    return now - dt <= timedelta(hours=24)
+
+
 async def _count_ops_started_today() -> int:
-    """Count operations of config.OPS_TYPE started today."""
+    """Count operations of config.OPS_TYPE started in the last 24h.
+
+    The backend enforces a rolling 24h limit (not calendar days), so the
+    counter must match that window or the bot starts extra ops after midnight.
+    """
     d = await api.empire_operations(config.HIVE_USERNAME)
     hist = d.get("history") or []
     return sum(
         1
         for h in hist
-        if h.get("operation_type") == config.OPS_TYPE and _is_today(h.get("started_at"))
+        if h.get("operation_type") == config.OPS_TYPE
+        and _is_within_24h(h.get("started_at"))
     )
 
 
