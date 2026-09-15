@@ -1055,23 +1055,108 @@ async def _plan_crate_text() -> str:
     return "=== Imperial Supply Crate ===\n" + "\n".join(lines)
 
 
-async def _check_crate_auto() -> None:
-    """Open crates whenever one becomes available (throttled via state.json).
+_crate_planned_task: asyncio.Task | None = None
 
-    Runs from the 5-minute scheduler loop so crates 2-4 (3h cooldown each)
-    are opened during the day instead of only at the 02:00 run.
+
+def _in_crate_open_window(now: datetime) -> bool:
+    """Crates are opened between 06:00 and 22:00 local time."""
+    return 6 <= now.hour < 22
+
+
+def _next_crate_window_start(now: datetime) -> datetime:
+    """Next 06:00 local time when the crate window is closed."""
+    target = now.replace(hour=6, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return target
+
+
+async def _schedule_crate_check() -> None:
+    """Persist a planned crate check at cooldown expiry + 5s and arm a task.
+
+    Instead of polling on a cron, computes when the next crate becomes
+    available (last open + 3h cooldown) and schedules a precise wake-up.
+    If the planned time falls outside 06:00-22:00, it is shifted into the
+    next window so crates are only opened during the day.
     """
-    last = scheduler.get_planned("crate_last_check")
-    now = datetime.now().astimezone()
-    if last is not None and (now - last).total_seconds() < intervals.CRATE_CHECK_INTERVAL_SECONDS:
+    global _crate_planned_task
+    if _crate_planned_task is not None and not _crate_planned_task.done():
         return
-    scheduler.set_planned("crate_last_check", now)
     status = await _crate_status()
-    if not status["can_open"]:
+    now = datetime.now().astimezone()
+    if status["opened_today"] >= config.CRATE_MAX_CLAIMS_PER_DAY:
+        # rolling 24h window is full: schedule for when the oldest crate
+        # within the window ages out and frees a slot
+        hist = await api.crate_history(config.HIVE_USERNAME)
+        entries = hist.get("history") or []
+        now_utc = datetime.now(tz=datetime.utcnow().astimezone().tzinfo)
+        in_window = [
+            _parse_iso(e.get("created_at"))
+            for e in entries
+        ]
+        in_window = [
+            t for t in in_window
+            if t is not None and now_utc - t <= timedelta(hours=24)
+        ]
+        if in_window:
+            oldest = min(in_window) + timedelta(hours=24, seconds=5)
+            planned = oldest.astimezone(now.tzinfo)
+        else:
+            planned = now + timedelta(hours=1)
+        if not _in_crate_open_window(planned):
+            planned = _next_crate_window_start(planned)
+        scheduler.set_planned("crate_open", planned)
+        wait = max(0.0, (planned - now).total_seconds())
+        _crate_planned_task = asyncio.create_task(_run_planned_crates(wait))
         return
-    lines = await _open_crates_up_to_daily_max()
-    if any(l.startswith("Opened crate:") for l in lines):
-        await _notify("Auto-crate:\n" + "\n".join(lines))
+    if status["cooldown_remaining"]:
+        planned = status["last_opened"] + timedelta(
+            seconds=intervals.CRATE_COOLDOWN_SECONDS
+        )
+        planned = planned.astimezone(now.tzinfo) + timedelta(seconds=5)
+    else:
+        planned = now + timedelta(seconds=5)
+    if not _in_crate_open_window(planned):
+        planned = _next_crate_window_start(planned)
+    scheduler.set_planned("crate_open", planned)
+    wait = max(0.0, (planned - now).total_seconds())
+    _crate_planned_task = asyncio.create_task(_run_planned_crates(wait))
+
+
+async def _run_planned_crates(wait: float) -> None:
+    """Sleep until the planned crate time, then open crates."""
+    global _crate_planned_task
+    try:
+        if wait > 0:
+            await asyncio.sleep(wait)
+        lines = await _open_crates_up_to_daily_max()
+        if any(l.startswith("Opened crate:") for l in lines):
+            await _notify("Auto-crate:\n" + "\n".join(lines))
+        # schedule the next wake-up (cooldown expiry or next-day window)
+        await _schedule_crate_check()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("planned crate open failed: %s", exc)
+    finally:
+        _crate_planned_task = None
+
+
+async def _check_crate_auto() -> None:
+    """Planner-based crate opener.
+
+    Instead of a periodic cron check, schedules an exact wake-up at the
+    estimated crate-ready time (+5s), shifted into the 06:00-22:00 window.
+    Called from the 5-minute scheduler loop only as a safety net for restarts.
+    """
+    planned = scheduler.get_planned("crate_open")
+    if planned is None:
+        await _schedule_crate_check()
+        return
+    now = datetime.now().astimezone()
+    if (
+        _crate_planned_task is None or _crate_planned_task.done()
+    ) and planned <= now:
+        scheduler.clear_planned("crate_open")
+        await _schedule_crate_check()
 
 
 async def _check_goods_auto() -> None:
