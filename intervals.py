@@ -94,3 +94,6 @@ OPS_AUTO_CHECK_INTERVAL_SECONDS = 30 * 60
 
 # How often the scheduler loop does a goods-claim safety check (seconds).
 GOODS_AUTO_CHECK_INTERVAL_SECONDS = 15 * 60
+
+# How often to retry the Hive Daily Empire Report publish if unclaimed (seconds).
+HIVE_PUBLISH_CHECK_INTERVAL_SECONDS = 60 * 60

@@ -1815,6 +1815,29 @@ async def cmd_publish(message: Message) -> None:
     await _safe_reply(message, text)
 
 
+async def _check_hive_publish_auto() -> None:
+    """Publish the Daily Empire Report on Hive when an unclaimed one exists.
+
+    Safety net running hourly from the scheduler loop: if the 02:00 attempt
+    failed (backend down, report not yet generated, broadcast error), this
+    retries during the day until the report is published and claimed.
+    """
+    from hive_publish import publish_daily_report
+
+    last = scheduler.get_planned("hive_publish_last_check")
+    now = datetime.now().astimezone()
+    if last is not None and (now - last).total_seconds() < intervals.HIVE_PUBLISH_CHECK_INTERVAL_SECONDS:
+        return
+    scheduler.set_planned("hive_publish_last_check", now)
+    try:
+        result = await publish_daily_report(api, config.HIVE_USERNAME)
+        if "already published" in result.lower():
+            return
+        await _notify("Hive report:\n" + result)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("hive publish auto-check failed: %s", exc)
+
+
 async def _run_daily_tasks_text():
     """Run the daily routine: claim HIVE, check lands, goods, crate, ops."""
     parts = []
@@ -2232,9 +2255,13 @@ async def _scheduler_loop() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("ops auto check failed: %s", exc)
         try:
-            await _check_goods_auto()
+            await _check_ops_auto()
         except Exception as exc:  # noqa: BLE001
-            logger.warning("goods auto check failed: %s", exc)
+            logger.warning("ops auto check failed: %s", exc)
+        try:
+            await _check_hive_publish_auto()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("hive publish auto check failed: %s", exc)
         await asyncio.sleep(intervals.GOODS_SCHEDULER_REFRESH_SECONDS)
 
 
