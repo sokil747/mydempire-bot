@@ -1324,13 +1324,12 @@ async def _kickoff_ops_automation() -> str:
 async def _check_ops_auto() -> None:
     """Re-kick ops automation if it stalled (e.g. after a bot restart).
 
-    The ops cycle lives in one long asyncio task; a restart kills it and ops
-    would silently stop until the next 02:00 run. Called from the 5-minute
-    scheduler loop, throttled via state.json. Notifies at most once per hour
-    to avoid spam when the backend keeps rejecting starts.
+    Throttled: the check itself runs at most every OPS_AUTO_CHECK_INTERVAL
+    (30 min) AND the Telegram notify at most every OPS_NOTIFY_INTERVAL (2h),
+    so a failing backend can never spam the chat.
     """
-    last = scheduler.get_planned("ops_last_check")
     now = datetime.now().astimezone()
+    last = scheduler.get_planned("ops_last_check")
     if last is not None and (now - last).total_seconds() < intervals.OPS_AUTO_CHECK_INTERVAL_SECONDS:
         return
     scheduler.set_planned("ops_last_check", now)
@@ -1340,9 +1339,15 @@ async def _check_ops_auto() -> None:
     remaining = config.OPS_PER_DAY - started
     if remaining <= 0:
         return
+    # notify throttle - independent of the check throttle
+    last_notify = scheduler.get_planned("ops_last_notify")
+    notify_ok = last_notify is None or (now - last_notify).total_seconds() >= intervals.OPS_NOTIFY_INTERVAL_SECONDS
     result = await _kickoff_ops_automation()
     logger.info("ops auto re-kick: %s", result)
-    if "already running" not in result:
+    if "already running" in result:
+        return
+    if notify_ok:
+        scheduler.set_planned("ops_last_notify", now)
         await _notify("Ops auto-restarted:\n" + result)
 
 
