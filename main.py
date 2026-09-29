@@ -1262,7 +1262,13 @@ async def _run_ops_automation(quiet: bool = False) -> list[str]:
             return lines
 
     for _ in range(remaining):
-        await _start_one_operation()
+        result = await _start_one_operation()
+        if result is None:
+            lines.append(
+                f"Could not start {config.OPS_TYPE} (backend limit, running "
+                "op exists, or not enough EMP). Stopping for this cycle."
+            )
+            break
         lines.append(
             f"Started {config.OPS_TYPE} (budget {config.OPS_BUDGET} EMP)."
         )
@@ -1320,7 +1326,8 @@ async def _check_ops_auto() -> None:
 
     The ops cycle lives in one long asyncio task; a restart kills it and ops
     would silently stop until the next 02:00 run. Called from the 5-minute
-    scheduler loop, throttled via state.json.
+    scheduler loop, throttled via state.json. Notifies at most once per hour
+    to avoid spam when the backend keeps rejecting starts.
     """
     last = scheduler.get_planned("ops_last_check")
     now = datetime.now().astimezone()
@@ -1335,7 +1342,8 @@ async def _check_ops_auto() -> None:
         return
     result = await _kickoff_ops_automation()
     logger.info("ops auto re-kick: %s", result)
-    await _notify("Ops auto-restarted:\n" + result)
+    if "already running" not in result:
+        await _notify("Ops auto-restarted:\n" + result)
 
 
 # ---------------------------------------------------------------------------
