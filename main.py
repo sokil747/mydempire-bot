@@ -1218,6 +1218,16 @@ async def _start_one_operation() -> dict:
     )
 
 
+async def _ops_budget_available() -> bool:
+    """Check EMP balance covers the configured ops budget."""
+    try:
+        d = await api.dashboard(config.HIVE_USERNAME)
+        return float(d.get("empBalance") or 0) >= float(config.OPS_BUDGET)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ops balance check failed: %s", exc)
+        return False
+
+
 async def _run_ops_automation(quiet: bool = False) -> list[str]:
     """Run the full ops cycle: start up to OPS_PER_DAY ops, each separated by
     a random 4-7h gap, collecting each when it finishes.
@@ -1238,6 +1248,16 @@ async def _run_ops_automation(quiet: bool = False) -> list[str]:
     )
     if remaining <= 0:
         lines.append("Daily limit reached. Nothing to do.")
+        _ops_task = None
+        return lines
+
+    # No budget, no start: exit quietly; the auto-check retries later when
+    # income (tier reward, ops refunds, redemption payout) lands.
+    if not await _ops_budget_available():
+        lines.append(
+            f"Not enough EMP for {config.OPS_BUDGET} budget yet — "
+            "waiting for income."
+        )
         _ops_task = None
         return lines
 
@@ -1324,9 +1344,9 @@ async def _kickoff_ops_automation() -> str:
 async def _check_ops_auto() -> None:
     """Re-kick ops automation if it stalled (e.g. after a bot restart).
 
-    Throttled: the check itself runs at most every OPS_AUTO_CHECK_INTERVAL
-    (30 min) AND the Telegram notify at most every OPS_NOTIFY_INTERVAL (2h),
-    so a failing backend can never spam the chat.
+    Silent by design: no Telegram message on skipped checks (limit reached,
+    not enough EMP, backend reject). Only an actual successful op start
+    notifies.
     """
     now = datetime.now().astimezone()
     last = scheduler.get_planned("ops_last_check")
@@ -1335,20 +1355,14 @@ async def _check_ops_auto() -> None:
     scheduler.set_planned("ops_last_check", now)
     if _ops_task is not None and not _ops_task.done():
         return
+    if not await _ops_budget_available():
+        return
     started = await _count_ops_started_today()
     remaining = config.OPS_PER_DAY - started
     if remaining <= 0:
         return
-    # notify throttle - independent of the check throttle
-    last_notify = scheduler.get_planned("ops_last_notify")
-    notify_ok = last_notify is None or (now - last_notify).total_seconds() >= intervals.OPS_NOTIFY_INTERVAL_SECONDS
-    result = await _kickoff_ops_automation()
-    logger.info("ops auto re-kick: %s", result)
-    if "already running" in result:
-        return
-    if notify_ok:
-        scheduler.set_planned("ops_last_notify", now)
-        await _notify("Ops auto-restarted:\n" + result)
+    result = await _run_ops_automation()
+    logger.info("ops auto re-kick: %s", " ".join(result[:2]))
 
 
 # ---------------------------------------------------------------------------
