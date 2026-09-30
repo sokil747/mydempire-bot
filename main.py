@@ -922,6 +922,7 @@ async def _open_crates_up_to_daily_max() -> list[str]:
     EMP back) and retries instead of giving up.
     """
     lines = []
+    now = datetime.now().astimezone()
     while True:
         status = await _crate_status()
         if not status["can_open"]:
@@ -978,9 +979,8 @@ async def _open_crates_up_to_daily_max() -> list[str]:
                 # backend is authoritative: daily limit or cooldown hit
                 lines.append("Crate limit/cooldown reached (backend).")
                 scheduler.set_planned(
-                    "crate_last_check",
-                    datetime.now().astimezone()
-                    + timedelta(minutes=55),
+                    "crate_open",
+                    now + timedelta(minutes=55),
                 )
             else:
                 lines.append(f"Crate open failed: {msg[:200]}")
@@ -988,16 +988,23 @@ async def _open_crates_up_to_daily_max() -> list[str]:
         except Exception as exc:  # noqa: BLE001
             lines.append(f"Crate open failed: {exc}")
             break
-        reward = d.get("reward") or {}
-        emp = (
-            d.get("emp_change")
-            or d.get("reward_change")
-            or reward.get("reward_amount")
-            or reward.get("emp_change")
-        )
-        rtype = d.get("reward_type") or reward.get("reward_type") or "reward"
-        rvalue = d.get("reward_value") or reward.get("reward_value") or ""
-        label = rvalue or f"{rtype} x{emp}" if emp is not None else str(rtype)
+        # The open response sometimes lacks reward fields; the crate history
+        # entry just written is the reliable source of the reward info.
+        emp = d.get("emp_change") or d.get("reward_change")
+        label = d.get("reward_value") or ""
+        rtype = d.get("reward_type")
+        if emp is None and label == "":
+            try:
+                await asyncio.sleep(1)
+                hist = await api.crate_history(config.HIVE_USERNAME)
+                latest = (hist.get("history") or [None])[0]
+                if latest is not None:
+                    emp = latest.get("emp_change")
+                    label = latest.get("reward_value") or label
+                    rtype = latest.get("reward_type") or rtype
+            except Exception:  # noqa: BLE001
+                pass
+        label = label or f"{rtype or 'reward'}"
         try:
             emp_f = float(emp) if emp is not None else None
         except (TypeError, ValueError):
@@ -1107,21 +1114,23 @@ async def _run_planned_crates(wait: float) -> None:
 
 
 async def _check_crate_auto() -> None:
-    """Planner-based crate opener.
+    """Self-healing crate opener (called from the 5-min scheduler loop).
 
-    Instead of a periodic cron check, schedules an exact wake-up at the
-    estimated crate-ready time (+5s), shifted into the 06:00-22:00 window.
-    Called from the 5-minute scheduler loop only as a safety net for restarts.
+    Opens immediately whenever a crate is openable inside the 06:00-22:00
+    window; otherwise arms the exact-time planner (cooldown expiry +5s or
+    when a rolling-24h slot frees). A crashed/hung armed task can never
+    block future opens: if a crate is openable now, we open it regardless.
     """
-    planned = scheduler.get_planned("crate_open")
-    if planned is None:
-        await _schedule_crate_check()
-        return
     now = datetime.now().astimezone()
-    if (
-        _crate_planned_task is None or _crate_planned_task.done()
-    ) and planned <= now:
-        scheduler.clear_planned("crate_open")
+    if not _in_crate_open_window(now):
+        return
+    status = await _crate_status()
+    if status["can_open"]:
+        lines = await _open_crates_up_to_daily_max()
+        if any(l.startswith("Opened crate:") for l in lines):
+            await _notify("Auto-crate:\n" + "\n".join(lines))
+    # (Re)arm the planner whenever no live task holds it.
+    if _crate_planned_task is None or _crate_planned_task.done():
         await _schedule_crate_check()
 
 
