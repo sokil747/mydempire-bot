@@ -499,6 +499,20 @@ class MydEmpireClient:
             },
         )
 
+    async def imperial_bank(self, username: str) -> dict:
+        return await self.get_json(f"/player/{username}/imperial-bank")
+
+    async def imperial_bank_draw(self, username: str) -> dict:
+        return await self._request(
+            "POST",
+            f"/player/{username}/imperial-bank/draw",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+            json={"username": username},
+        )
+
     async def imperial_mint_claim(self, username: str, special_industry_id: int) -> dict:
         return await self._request(
             "POST",

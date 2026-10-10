@@ -100,3 +100,6 @@ GOODS_AUTO_CHECK_INTERVAL_SECONDS = 15 * 60
 
 # How often to retry the Hive Daily Empire Report publish if unclaimed (seconds).
 HIVE_PUBLISH_CHECK_INTERVAL_SECONDS = 60 * 60
+
+# How often the scheduler loop retries the Imperial Bank treasury draw (seconds).
+BANK_DRAW_CHECK_INTERVAL_SECONDS = 60 * 60

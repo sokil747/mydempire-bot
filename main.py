@@ -138,6 +138,7 @@ async def cmd_start(message: Message) -> None:
         "/fulfillment - check factory fulfillment progress & plan claim\n"
         "/stats - gather statistics and write today's row to Google Sheets\n"
         "/mint - claim Imperial Mint EMP and pay its maintenance\n"
+        "/bank - Imperial Bank status + make today's Treasury Draw\n"
         "/publish - publish Daily Empire Report on Hive + claim reward\n"
         "/report - show today's activity report\n"
         "/help - this message",
@@ -1374,9 +1375,114 @@ async def _check_ops_auto() -> None:
     logger.info("ops auto re-kick: %s", " ".join(result[:2]))
 
 
-# ---------------------------------------------------------------------------
-# Factory fulfillment automation: check progress, estimate completion, claim
-# when 100% (+ buffer), then start a new fulfillment.
+async def _bank_draw_text(api=None) -> str:
+    """Make the daily Treasury Draw on the Imperial Bank (once per UTC day).
+
+    Skips silently when: bank empty/disabled, today's draw already used,
+    cycle draws consumed, or cycle ended. Only a successful draw notifies.
+    """
+    api = api or globals()['api']
+    try:
+        bank = await api.imperial_bank(config.HIVE_USERNAME)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("imperial bank state failed: %s", exc)
+        return "Imperial Bank: state unavailable."
+    if not bank.get("success"):
+        return "Imperial Bank: not available."
+    active = bank.get("activeCycle")
+    if not active or str(active.get("status") or "").upper() != "ACTIVE":
+        return "Imperial Bank: no active cycle."
+    cycle = bank.get("cycle") or active
+    # cycle-level draw budget from the start of the cycle
+    total = int(cycle.get("total_draws") or 0)
+    consumed = int(bank.get("drawsConsumed") or cycle.get("draws_consumed") or 0)
+    if bank.get("drawsRemaining") is not None:
+        remaining = int(bank.get("drawsRemaining") or 0)
+    else:
+        remaining = max(0, total - consumed)
+    if remaining <= 0:
+        return (
+            f"Imperial Bank: all {total} draws of cycle {cycle.get('id')} "
+            "are used. Waiting for the next cycle."
+        )
+    if not bank.get("todayDrawAvailable"):
+        return (
+            f"Imperial Bank: today's draw already done "
+            f"({consumed}/{total} in cycle)."
+        )
+    try:
+        result = await api.imperial_bank_draw(config.HIVE_USERNAME)
+    except MydEmpireAPIError as exc:
+        msg = str(exc)
+        if "already" in msg.lower() or "draw" in msg.lower():
+            return f"Imperial Bank draw skipped: {msg[:160]}"
+        raise
+    draw = result.get("draw") or {}
+    label = draw.get("reward_label") or result.get("label") or "Treasury Draw complete"
+    amount = draw.get("reward_amount") or 0
+    used = int(bank.get("drawsConsumed") or 0) + 0
+    # refresh count after the draw
+    try:
+        fresh = await api.imperial_bank(config.HIVE_USERNAME)
+        used = int(fresh.get("drawsConsumed") or used)
+        remaining = int(fresh.get("drawsRemaining") or remaining)
+    except Exception:  # noqa: BLE001
+        pass
+    log_action(
+        "Treasury draw",
+        emp=float(amount) if amount is not None else None,
+        detail=f"Draw #{bank.get('nextDrawNumber')}: {label}",
+    )
+    await _notify(
+        "Treasury draw done:\n"
+        f"Draw #{bank.get('nextDrawNumber')}: {label} ({_num(amount)} EMP)\n"
+        f"Cycle draws used: {used}/{total} (cycle ends {_fmt_iso(cycle.get('ends_at'))})"
+    )
+    return (
+        f"Treasury draw: {label} ({_num(amount)} EMP) — "
+        f"{used}/{total} cycle draws used"
+    )
+
+
+@dp.message(Command("bank"))
+async def cmd_bank(message: Message) -> None:
+    """Imperial Bank status + make today's Treasury Draw."""
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        bank = await api.imperial_bank(config.HIVE_USERNAME)
+        balances = bank.get("balances") or {}
+        active = bank.get("activeCycle") or {}
+        draw_text = await _bank_draw_text()
+        text = (
+            "=== Imperial Bank ===\n"
+            f"Banked EMP: {_num(balances.get('bankEmp'))} | "
+            f"Liquid: {_num(balances.get('liquidEmp'))}\n"
+            f"Draws used: {bank.get('drawsConsumed')}/{(active or {}).get('total_draws')} "
+            f"(cycle ends {_fmt_iso((active or {}).get('ends_at'))})\n\n{draw_text}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("bank failed")
+        await _reply(message, f"Failed to run treasury draw: {exc}")
+        return
+    await _safe_reply(message, text)
+
+
+async def _check_bank_draw_auto() -> None:
+    """Hourly safety net: make the Treasury Draw if available today.
+
+    The 02:00 run attempts first; this retries during the day in case the
+    backend or Hive was hiccuping at 02:00.
+    """
+    last = scheduler.get_planned("bank_draw_last_check")
+    now = datetime.now().astimezone()
+    if last is not None and (now - last).total_seconds() < intervals.BANK_DRAW_CHECK_INTERVAL_SECONDS:
+        return
+    scheduler.set_planned("bank_draw_last_check", now)
+    await _bank_draw_text()
+
+
 # ---------------------------------------------------------------------------
 
 _fulfillment_claim_task: asyncio.Task | None = None
@@ -1923,6 +2029,10 @@ async def _run_daily_tasks_text():
         parts.append(await publish_daily_report(api, config.HIVE_USERNAME))
     except Exception as exc:  # noqa: BLE001
         parts.append(f"Hive publish failed: {exc}")
+    try:
+        parts.append(await _bank_draw_text())
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"Treasury draw failed: {exc}")
     return "\n\n".join(parts)
 
 
@@ -2298,6 +2408,10 @@ async def _scheduler_loop() -> None:
             await _check_hive_publish_auto()
         except Exception as exc:  # noqa: BLE001
             logger.warning("hive publish auto check failed: %s", exc)
+        try:
+            await _check_bank_draw_auto()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("bank draw auto check failed: %s", exc)
         await asyncio.sleep(intervals.GOODS_SCHEDULER_REFRESH_SECONDS)
 
 
