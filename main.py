@@ -1503,6 +1503,36 @@ async def cmd_bank(message: Message) -> None:
     await _safe_reply(message, text)
 
 
+async def _check_redeem_auto() -> None:
+    """Hourly: burn all redeemable inventory goods (AUTO_REDEMPTION_MODE decides).
+
+    Goods are only valuable through redemption pool payouts, so anything
+    sitting in inventory is lost income — redeem continuously.
+    """
+    if not config.AUTO_REDEMPTION or config.AUTO_REDEMPTION_MODE == "NONE":
+        return
+    last = scheduler.get_planned("redeem_last_check")
+    now = datetime.now().astimezone()
+    if last is not None and (now - last).total_seconds() < intervals.REDEEM_CHECK_INTERVAL_SECONDS:
+        return
+    scheduler.set_planned("redeem_last_check", now)
+    try:
+        inv = await api.goods_inventory(config.HIVE_USERNAME)
+        items = [
+            i for i in (inv.get("items") or [])
+            if str(i.get("status") or "AVAILABLE").upper() == "AVAILABLE" and i.get("id")
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("redeem check inventory failed: %s", exc)
+        return
+    if not items:
+        return
+    try:
+        await _auto_redeem_goods()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("hourly auto-redeem failed: %s", exc)
+
+
 async def _check_bank_draw_auto() -> None:
     """Hourly safety net: make the Treasury Draw if available today.
 
@@ -2457,6 +2487,10 @@ async def _scheduler_loop() -> None:
             await _check_diwali_auto()
         except Exception as exc:  # noqa: BLE001
             logger.warning("diwali auto check failed: %s", exc)
+        try:
+            await _check_redeem_auto()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("redeem auto check failed: %s", exc)
         await asyncio.sleep(intervals.GOODS_SCHEDULER_REFRESH_SECONDS)
 
 

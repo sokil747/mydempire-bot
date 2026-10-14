@@ -106,3 +106,6 @@ BANK_DRAW_CHECK_INTERVAL_SECONDS = 60 * 60
 
 # How often the scheduler loop checks/starts the Diwali daily basket (seconds).
 DIWALI_CHECK_INTERVAL_SECONDS = 60 * 60
+
+# How often the scheduler loop burns available goods into the redemption cycle.
+REDEEM_CHECK_INTERVAL_SECONDS = 60 * 60
