@@ -502,6 +502,37 @@ class MydEmpireClient:
     async def imperial_bank(self, username: str) -> dict:
         return await self.get_json(f"/player/{username}/imperial-bank")
 
+    async def diwali_state(self) -> dict:
+        return await self.get_json("/diwali-festival/state")
+
+    async def diwali_player(self, username: str) -> dict:
+        return await self.get_json(
+            f"/diwali-festival/player/{username}",
+            headers={"x-mde-actor": username},
+        )
+
+    async def diwali_submit_basket(self, username: str, goods_ids: list[int]) -> dict:
+        return await self._request(
+            "POST",
+            f"/diwali-festival/basket/{username}",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+            json={"goods_ids": goods_ids},
+        )
+
+    async def diwali_open_nft(self, username: str, nft_id: str) -> dict:
+        return await self._request(
+            "POST",
+            f"/diwali-festival/nft/{username}/{nft_id}/open",
+            headers={
+                "Content-Type": "application/json",
+                "x-mde-actor": username,
+            },
+            json={"username": username},
+        )
+
     async def imperial_bank_draw(self, username: str) -> dict:
         return await self._request(
             "POST",

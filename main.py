@@ -139,6 +139,7 @@ async def cmd_start(message: Message) -> None:
         "/stats - gather statistics and write today's row to Google Sheets\n"
         "/mint - claim Imperial Mint EMP and pay its maintenance\n"
         "/bank - Imperial Bank status + make today's Treasury Draw\n"
+        "/diwali - Diwali festival: status + submit today's basket\n"
         "/publish - publish Daily Empire Report on Hive + claim reward\n"
         "/report - show today's activity report\n"
         "/help - this message",
@@ -1444,6 +1445,39 @@ async def _bank_draw_text(api=None) -> str:
     )
 
 
+async def _check_diwali_auto() -> None:
+    """Hourly safety net for the Diwali daily basket (event days only)."""
+    from diwali import run_daily_basket
+
+    last = scheduler.get_planned("diwali_last_check")
+    now = datetime.now().astimezone()
+    if last is not None and (now - last).total_seconds() < intervals.DIWALI_CHECK_INTERVAL_SECONDS:
+        return
+    scheduler.set_planned("diwali_last_check", now)
+    result = await run_daily_basket(api)
+    if "submitted" in result.lower():
+        await _notify("Diwali:\n" + result)
+
+
+@dp.message(Command("diwali"))
+async def cmd_diwali(message: Message) -> None:
+    """Diwali status + submit today's basket."""
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id, action=ChatAction.TYPING
+        )
+        from diwali import run_daily_basket, status_text
+
+        st = await status_text(api)
+        res = await run_daily_basket(api)
+        text = f"{st}\n\n{res}"
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("diwali failed")
+        await _reply(message, f"Failed to run diwali tasks: {exc}")
+        return
+    await _safe_reply(message, text)
+
+
 @dp.message(Command("bank"))
 async def cmd_bank(message: Message) -> None:
     """Imperial Bank status + make today's Treasury Draw."""
@@ -2033,6 +2067,13 @@ async def _run_daily_tasks_text():
         parts.append(await _bank_draw_text())
     except Exception as exc:  # noqa: BLE001
         parts.append(f"Treasury draw failed: {exc}")
+    try:
+        from diwali import run_daily_basket, status_text
+
+        parts.append(await run_daily_basket(api))
+        parts.append(await status_text(api))
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"Diwali failed: {exc}")
     return "\n\n".join(parts)
 
 
@@ -2412,6 +2453,10 @@ async def _scheduler_loop() -> None:
             await _check_bank_draw_auto()
         except Exception as exc:  # noqa: BLE001
             logger.warning("bank draw auto check failed: %s", exc)
+        try:
+            await _check_diwali_auto()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("diwali auto check failed: %s", exc)
         await asyncio.sleep(intervals.GOODS_SCHEDULER_REFRESH_SECONDS)
 
 
