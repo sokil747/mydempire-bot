@@ -800,14 +800,19 @@ async def _auto_redeem_goods() -> str:
     ]
 
     if config.AUTO_REDEMPTION_MODE == "ALL":
-        available = [i.get("id") for i in items]
-        skipped = []
+        from diwali import diwali_reserved_ids
+
+        keep = await diwali_reserved_ids(api, items)
+        available = [i.get("id") for i in items if i.get("id") not in keep]
+        skipped = sorted(keep)
     elif config.AUTO_REDEMPTION_MODE == "EXCEPT_TICKET_MINT":
         from ticket_mint import ticket_mint_reserved_ids
+        from diwali import diwali_reserved_ids
 
-        reserved = ticket_mint_reserved_ids(items)
-        available = [i.get("id") for i in items if i.get("id") not in reserved]
-        skipped = sorted(reserved)
+        keep = ticket_mint_reserved_ids(items)
+        keep |= await diwali_reserved_ids(api, items)
+        available = [i.get("id") for i in items if i.get("id") not in keep]
+        skipped = sorted(keep)
     else:  # NONE
         return "=== Goods Redemption ===\nAuto-redemption disabled."
 
@@ -830,7 +835,7 @@ async def _auto_redeem_goods() -> str:
         f"Redeemed: {len(available)} goods"
     )
     if skipped:
-        line += f"\nReserved for Imperial Ticket Mint: {len(skipped)} goods"
+        line += f"\nHeld back: {len(skipped)} goods (Diwali basket / ticket mint)"
     if result and result.get("message"):
         line += f"\n{result['message']}"
     if result and result.get("empReward") is not None:
