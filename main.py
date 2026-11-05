@@ -793,6 +793,11 @@ async def _auto_redeem_goods() -> str:
       every other available good
     - NONE        : nothing redeemed (handled by AUTO_REDEMPTION flag)
     """
+    from diwali import redeem_suspended
+
+    if await redeem_suspended(api):
+        return "=== Goods Redemption ===\nDiwali festival LIVE — redemption suspended."
+
     inventory = await api.goods_inventory(config.HIVE_USERNAME)
     items = [
         i for i in (inventory.get("items") or [])
@@ -1464,6 +1469,25 @@ async def _check_diwali_auto() -> None:
         await _notify("Diwali:\n" + result)
 
 
+async def _diwali_basket_after_claim(delay: float) -> None:
+    """Submit today's Diwali basket shortly after goods claim (+delay s).
+
+    Runs the same run_daily_basket as the hourly safety net; only failures
+    are logged here (self-healing retry picks them up within the hour).
+    """
+    await asyncio.sleep(delay)
+    try:
+        from diwali import run_daily_basket
+
+        result = await run_daily_basket(api)
+        if "submitted" in result.lower():
+            await _notify("Diwali:\n" + result)
+        else:
+            logger.info("diwali after-claim basket: %s", result)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("diwali after-claim basket failed: %s", exc)
+
+
 @dp.message(Command("diwali"))
 async def cmd_diwali(message: Message) -> None:
     """Diwali status + submit today's basket."""
@@ -1515,6 +1539,10 @@ async def _check_redeem_auto() -> None:
     sitting in inventory is lost income — redeem continuously.
     """
     if not config.AUTO_REDEMPTION or config.AUTO_REDEMPTION_MODE == "NONE":
+        return
+    from diwali import redeem_suspended
+
+    if await redeem_suspended(api):
         return
     last = scheduler.get_planned("redeem_last_check")
     now = datetime.now().astimezone()
@@ -2340,6 +2368,14 @@ async def _run_goods_claim() -> None:
             claim_text += f"\n\nGoods redemption failed: {exc}"
             logger.exception("auto redeem failed")
     await _notify(claim_text)
+    from diwali import festival_live
+
+    if await festival_live(api):
+        asyncio.create_task(
+            _diwali_basket_after_claim(
+                config.DIWALI_AFTER_CLAIM_DELAY_SECONDS
+            )
+        )
     fresh = await api.goods_preview(config.HIVE_USERNAME)
     remaining = int(
         fresh.get("remainingGoodsClaimSeconds")
@@ -2472,10 +2508,6 @@ async def _scheduler_loop() -> None:
             await _check_crate_auto()
         except Exception as exc:  # noqa: BLE001
             logger.warning("crate auto check failed: %s", exc)
-        try:
-            await _check_ops_auto()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("ops auto check failed: %s", exc)
         try:
             await _check_ops_auto()
         except Exception as exc:  # noqa: BLE001

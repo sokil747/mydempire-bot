@@ -1,13 +1,22 @@
 """Diwali Festival automation (Nov 1-7, 2026).
 
-Daily UTC basket: >=3 goods totaling >=250 PV qualify for the midnight draw
-(15 HIVE to one participant + one sealed NFT to another) and milestones
-(3 days -> 50 EMP, 7 days -> 100 EMP + 5 AP).
+Event rules (https://www.mydempire.com/diwali-festival.html):
+- 100 EMP one-time registration; daily basket qualifies for that day's draw.
+- Basket: any 3+ available goods totaling >=500 PV (any rarity/quality).
+- Draws 15 HIVE + sealed NFT daily at 00:00 UTC; milestones: 3 days -> 50 EMP,
+  7 days -> 100 EMP + 5 AP.
 
-The basket uses the CHEAPEST qualifying goods so the least PV leaves the
-inventory; ticket-mint goods are never selected.
+Automation:
+- While the event is LIVE, goods auto-redemption is fully suspended (all
+  available goods are kept for festival use).
+- The basket is submitted right after each goods claim (+10s buffer), with an
+  hourly self-healing retry in the scheduler loop as safety net.
+- The basket uses the CHEAPEST qualifying goods (least PV per submission);
+  ticket-mint reserved goods are used only as a last resort (when no
+  500-PV basket is possible without them).
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -15,8 +24,23 @@ import config
 
 logger = logging.getLogger("mde_bot.diwali")
 
-MIN_GOODS = 3
-MIN_PV = 250
+MIN_GOODS = getattr(config, "DIWALI_MIN_GOODS", 3)
+MIN_PV = getattr(config, "DIWALI_MIN_PV", 500.0)
+
+
+async def festival_live(api) -> bool:
+    """True when the event status is LIVE (regardless of today's basket)."""
+    try:
+        state = await api.diwali_state()
+    except Exception:  # noqa: BLE001
+        return False
+    event = state.get("event") or {}
+    return str(event.get("status") or "").upper() == "LIVE"
+
+
+async def redeem_suspended(api) -> bool:
+    """True while the festival is LIVE: goods auto-redemption is suspended."""
+    return await festival_live(api)
 
 
 async def _diwali_active_and_open(api) -> bool:
@@ -54,23 +78,24 @@ def _cheapest_basket(items: list) -> tuple[list[int], float] | None:
 
 
 async def diwali_reserved_ids(api, items: list) -> set[int]:
-    """Ids of the cheapest qualifying Diwali basket when it must be kept.
+    """Ids of ALL available goods while the festival is LIVE.
 
-    Returns an empty set when the event is not live or today's basket is
-    already submitted (nothing to protect).
+    During the event goods auto-redemption is fully suspended: nothing may
+    be burned until the daily contribution is made and, with redemption off
+    for the whole festival, inventory keeps accumulating for future days.
+    Returns an empty set when the event is not live.
     """
-    if not await _diwali_active_and_open(api):
+    if not await festival_live(api):
         return set()
-    basket = _cheapest_basket(items)
-    if not basket:
-        return set()
-    return set(basket[0])
+    return {int(i["id"]) for i in items if i.get("id")}
 
 
 async def select_basket(api) -> tuple[list[int], float] | None:
-    """Pick the cheapest 3+ goods reaching 250 PV from available inventory.
+    """Pick the cheapest 3+ goods reaching 500 PV from available inventory.
 
-    Excludes ticket-mint reserved goods. Returns (ids, total_pv) or None.
+    Prefers goods not reserved for the Imperial Ticket Mint; only when no
+    qualifying basket exists without them are ticket-mint goods included
+    (event participation outranks ticket prep).
     """
     from ticket_mint import ticket_mint_reserved_ids
 
@@ -80,9 +105,12 @@ async def select_basket(api) -> tuple[list[int], float] | None:
         if str(i.get("status") or "AVAILABLE").upper() == "AVAILABLE"
         and i.get("id")
     ]
-    reserved = ticket_mint_reserved_ids(items)
-    candidates = [i for i in items if int(i["id"]) not in reserved]
-    basket = _cheapest_basket(candidates)
+    reserved = ticket_mint_reserved_ids(items) or set()
+    basket = _cheapest_basket(
+        [i for i in items if int(i["id"]) not in reserved]
+    )
+    if not basket:
+        basket = _cheapest_basket(items)
     if not basket:
         return None
     return basket[0], basket[1]
@@ -120,7 +148,7 @@ async def run_daily_basket(api) -> str:
 
     basket = await select_basket(api)
     if not basket:
-        return "Diwali: not enough available PV (needs 3+ goods, 250+ PV)."
+        return f"Diwali: not enough available PV (needs {MIN_GOODS}+ goods, {int(MIN_PV)}+ PV)."
     ids, total_pv = basket
     result = await api.diwali_submit_basket(
         config.HIVE_USERNAME, ids

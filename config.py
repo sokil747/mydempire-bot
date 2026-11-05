@@ -101,3 +101,12 @@ CRATE_MAX_CLAIMS_PER_DAY = int(os.getenv("CRATE_MAX_CLAIMS_PER_DAY", "4"))
 # Time (HH:MM, VPS local time) when the compiled daily activity report
 # (actions log + EMP ledger + asset changes + leaderboards) is sent.
 DAILY_LOG_TIME = os.getenv("DAILY_LOG_TIME", "23:58")
+
+# ---- Diwali Festival automation ----
+# Daily basket: at least DIWALI_MIN_GOODS goods totaling DIWALI_MIN_PV PV.
+# Live game default: 3 goods / 500 PV (https://www.mydempire.com/diwali-festival.html).
+# While the event is LIVE, goods auto-redemption is fully suspended.
+# After each claim, the basket is submitted DIWALI_AFTER_CLAIM_DELAY_SECONDS later.
+DIWALI_MIN_GOODS = int(os.getenv("DIWALI_MIN_GOODS", "3"))
+DIWALI_MIN_PV = float(os.getenv("DIWALI_MIN_PV", "500"))
+DIWALI_AFTER_CLAIM_DELAY_SECONDS = int(os.getenv("DIWALI_AFTER_CLAIM_DELAY_SECONDS", "10"))
