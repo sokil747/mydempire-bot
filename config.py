@@ -51,8 +51,9 @@ DAILY_REPORT_CHAT_ID = _opt_int("DAILY_REPORT_CHAT_ID")
 # ---- empire operations automation ----
 # Operation type to run each day (LOCAL_SUPPLY / REGIONAL_TRADE / IMPERIAL_EXPANSION).
 OPS_TYPE = os.getenv("OPS_TYPE", "LOCAL_SUPPLY")
-# EMP budget to commit per operation.
-OPS_BUDGET = int(os.getenv("OPS_BUDGET", "25"))
+# EMP budget to commit per operation. Default 75: the backend rejects smaller
+# budgets since ~Nov 2026 ("Invalid operational budget" for 10/25).
+OPS_BUDGET = int(os.getenv("OPS_BUDGET", "75"))
 # How many operations to start per day.
 OPS_PER_DAY = int(os.getenv("OPS_PER_DAY", "3"))
 

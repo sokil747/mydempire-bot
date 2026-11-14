@@ -1233,9 +1233,44 @@ async def _wait_then_collect() -> dict | None:
     return None
 
 
+_OPS_BUDGET_EFFECTIVE: int | None = None
+
+
+def _ops_budget_ladder(balance: float) -> list[int]:
+    """Budgets to try, most-preferred first, capped by the EMP balance."""
+    preferred = _OPS_BUDGET_EFFECTIVE or config.OPS_BUDGET
+    ladder = [preferred] + [
+        b for b in (100, 75, 50, 25) if b != preferred
+    ]
+    return [b for b in ladder if 0 < b <= balance] or [int(balance)]
+
+
 async def _start_one_operation() -> dict:
-    return await api.start_operation(
-        config.HIVE_USERNAME, config.OPS_TYPE, config.OPS_BUDGET
+    """Start an operation, adapting the budget when the server rejects it.
+
+    The backend raised the minimum operational budget (~Nov 2026); when it
+    answers 'Invalid operational budget', walk a fallback ladder downward
+    from the known-good tiers and remember what worked for this session.
+    """
+    ops = await api.empire_operations(config.HIVE_USERNAME)
+    balance = float(ops.get("empBalance") or 0)
+    for budget in _ops_budget_ladder(balance):
+        try:
+            result = await api.start_operation(
+                config.HIVE_USERNAME, config.OPS_TYPE, budget
+            )
+        except Exception as exc:  # noqa: BLE001
+            if "Invalid operational budget" in str(exc):
+                logger.warning(
+                    "ops budget %s rejected — trying fallback", budget
+                )
+                continue
+            raise
+        global _OPS_BUDGET_EFFECTIVE
+        _OPS_BUDGET_EFFECTIVE = budget
+        return result
+    raise MydEmpireAPIError(
+        "Operational budget rejected for all known tiers — update config.OPS_BUDGET"
     )
 
 
@@ -1311,10 +1346,11 @@ async def _run_ops_automation(quiet: bool = False) -> list[str]:
             )
             break
         lines.append(
-            f"Started {config.OPS_TYPE} (budget {config.OPS_BUDGET} EMP)."
+            f"Started {config.OPS_TYPE} "
+            f"(budget {result.get('emp_committed') or config.OPS_BUDGET} EMP)."
         )
         await _notify(
-            f"Started {config.OPS_TYPE} (budget {config.OPS_BUDGET} EMP)."
+            f"Started {config.OPS_TYPE} (budget {result.get('emp_committed') or config.OPS_BUDGET} EMP)."
         )
         log_action(
             f"Operation started {config.OPS_TYPE}",
@@ -1467,6 +1503,12 @@ async def _check_diwali_auto() -> None:
     result = await run_daily_basket(api)
     if "submitted" in result.lower():
         await _notify("Diwali:\n" + result)
+    elif "not enough" in result.lower():
+        # Warn at most once per UTC day so the user can intervene manually.
+        warn = scheduler.get_planned("diwali_pv_warn")
+        if warn is None or warn.date() != now.date():
+            scheduler.set_planned("diwali_pv_warn", now)
+            await _notify("Diwali:\n" + result)
 
 
 async def _diwali_basket_after_claim(delay: float) -> None:
@@ -1486,6 +1528,27 @@ async def _diwali_basket_after_claim(delay: float) -> None:
             logger.info("diwali after-claim basket: %s", result)
     except Exception as exc:  # noqa: BLE001
         logger.warning("diwali after-claim basket failed: %s", exc)
+
+
+async def _diwali_startup_check() -> None:
+    """Attempt the Diwali basket once right after boot/wake.
+
+    Covers the worst miss case: the process was suspended (laptop sleep)
+    around a UTC midnight and hourly checks never saw the new event day
+    until much later. One attempt at startup closes that gap within
+    seconds of resume; the hourly safety net covers the rest of the day.
+    """
+    await asyncio.sleep(20)
+    try:
+        from diwali import run_daily_basket
+
+        result = await run_daily_basket(api)
+        if "submitted" in result.lower():
+            await _notify("Diwali (startup):\n" + result)
+        else:
+            logger.info("diwali startup check: %s", result)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("diwali startup check failed: %s", exc)
 
 
 @dp.message(Command("diwali"))
@@ -2541,6 +2604,7 @@ async def main() -> None:
         scheduler = asyncio.create_task(_daily_tasks_loop())
         evening = asyncio.create_task(_evening_report_loop())
         goods_sched = asyncio.create_task(_scheduler_loop())
+        diwali_warmup = asyncio.create_task(_diwali_startup_check())
         await dp.start_polling(
             _bot, timeout=intervals.TG_POLLING_TIMEOUT_SECONDS
         )
@@ -2548,6 +2612,7 @@ async def main() -> None:
         scheduler.cancel()
         evening.cancel()
         goods_sched.cancel()
+        diwali_warmup.cancel()
         await api.close()
         await _bot.session.close()
 
